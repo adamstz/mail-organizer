@@ -1,3 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+env/
+venv/
+build/
+dist/
+
+# Node
+node_modules/
+/.pnp\
+/.pnp.js
+
+# Misc
+.DS_Store
+/.env
+token.json
+credentials.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

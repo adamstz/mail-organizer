@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID}
+      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET}
+      - GMAIL_REFRESH_TOKEN=${GMAIL_REFRESH_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_PROJECT_ID=${GOOGLE_PROJECT_ID}
+      - GOOGLE_PUBSUB_TOPIC=${GOOGLE_PUBSUB_TOPIC}
+      - GOOGLE_PUBSUB_SUBSCRIPTION=${GOOGLE_PUBSUB_SUBSCRIPTION}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - llm-service
+
+  llm-service:
+    build:
+      context: ./llm
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - MODEL_PATH=/models/your-model
+    volumes:
+      - ./llm:/app

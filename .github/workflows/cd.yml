@@ -1,0 +1,60 @@
+name: CD
+
+on:
+  push:
+    branches: [ main ]
+    
+  # Allow manual triggers
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    # Set up Google Cloud CLI
+    - id: 'auth'
+      name: 'Authenticate to Google Cloud'
+      uses: 'google-github-actions/auth@v1'
+      with:
+        credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v1'
+
+    # Build and push Docker images
+    - name: Configure Docker
+      run: gcloud auth configure-docker
+
+    - name: Build Backend
+      run: |
+        docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/organize-mail-backend:${{ github.sha }} ./backend
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/organize-mail-backend:${{ github.sha }}
+
+    - name: Build Frontend
+      run: |
+        docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/organize-mail-frontend:${{ github.sha }} ./frontend
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/organize-mail-frontend:${{ github.sha }}
+
+    # Deploy to Cloud Run
+    - name: Deploy Backend
+      run: |
+        gcloud run deploy organize-mail-backend \
+          --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/organize-mail-backend:${{ github.sha }} \
+          --platform managed \
+          --region us-central1 \
+          --allow-unauthenticated \
+          --set-env-vars="GMAIL_CLIENT_ID=${{ secrets.GMAIL_CLIENT_ID }}" \
+          --set-env-vars="GMAIL_CLIENT_SECRET=${{ secrets.GMAIL_CLIENT_SECRET }}" \
+          --set-env-vars="OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
+
+    - name: Deploy Frontend
+      run: |
+        gcloud run deploy organize-mail-frontend \
+          --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/organize-mail-frontend:${{ github.sha }} \
+          --platform managed \
+          --region us-central1 \
+          --allow-unauthenticated
