@@ -23,7 +23,18 @@ const App: React.FC = () => {
           </Typography>
         </Toolbar>
       </AppBar>
-      <Container maxWidth={false} disableGutters sx={{ height: '100vh', bgcolor: 'grey.100' }}>
+      <Container 
+        maxWidth={false} 
+        disableGutters 
+        sx={{ 
+          height: '100vh',
+          width: '100vw',
+          bgcolor: 'grey.100',
+          display: 'flex',
+          flexDirection: 'column',
+          p: 0
+        }}
+      >
         <EmailList />
       </Container>
     </ThemeProvider>

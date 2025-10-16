@@ -71,8 +71,24 @@ const EmailList: React.FC = () => {
   };
 
   return (
-    <Paper elevation={0} sx={{ width: "100%", p: 2, bgcolor: 'transparent' }}>
-      <List sx={{ width: '100%', maxWidth: 'none' }}>
+    <Paper 
+      elevation={0} 
+      sx={{ 
+        width: "100%", 
+        flexGrow: 1,
+        bgcolor: 'transparent',
+        height: '100%',
+        overflow: 'auto',
+        p: { xs: 1, sm: 2, md: 3 },
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+    >
+      <List sx={{ 
+        width: '100%',
+        mx: 'auto',
+        minWidth: '100%'
+      }}>
         {emails.map((email) => (
           <React.Fragment key={email.id}>
             <ListItem
@@ -83,8 +99,10 @@ const EmailList: React.FC = () => {
                 borderBottom: '1px solid',
                 borderColor: 'divider',
                 bgcolor: 'background.paper',
-                mb: 1,
+                mb: 2,
                 borderRadius: 1,
+                p: 2,
+                boxShadow: 1,
               }}
             >
               <Box sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
