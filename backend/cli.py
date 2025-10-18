@@ -2,15 +2,15 @@
 
 Usage examples (local dev):
 
-    python -m organize_mail.cli run-server
-    python -m organize_mail.cli run-subscriber
+    python -m src.cli run-server
+    python -m src.cli run-subscriber
 """
 import os
 import logging
 import sys
 from importlib import import_module
 
-from .api import app
+from src.api import app
 
 
 def run_server():
@@ -20,18 +20,12 @@ def run_server():
 
 
 def run_subscriber():
-    from .pubsub_subscriber import run_subscriber
-
-    sub = os.environ.get("GMAIL_PUBSUB_SUBSCRIPTION")
-    if not sub:
-        logging.error("Set GMAIL_PUBSUB_SUBSCRIPTION environment variable")
-        sys.exit(2)
-
-    def handler(payload):
-        # naive handler: log payload
-        logging.info("Received payload: %s", payload)
-
-    run_subscriber(sub, handler)
+    # The Pub/Sub subscriber helper was removed to keep the backend minimal.
+    # If you want to consume messages from a subscription, either:
+    #  - re-add a subscriber implementation in src.pubsub_subscriber and import it here, or
+    #  - run a small one-off script that pulls from the subscription and processes messages.
+    logging.error("Pub/Sub subscriber helper not available. Implement 'src.pubsub_subscriber.run_subscriber' or run a custom pull script.")
+    sys.exit(2)
 
 
 def main(argv=None):
