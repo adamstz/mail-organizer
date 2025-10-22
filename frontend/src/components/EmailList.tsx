@@ -17,33 +17,8 @@ import {
 } from '@mui/icons-material';
 import { Email } from '../types/email';
 
-// Example email data
-const exampleEmails: Email[] = [
-  {
-    id: 1,
-    subject: 'Project Update Meeting',
-    date: '2025-10-14',
-    priority: 'High',
-    summary: 'Discussion about Q4 milestones and upcoming deadlines',
-    body: "Dear team,\n\nI wanted to follow up on our project status and discuss the upcoming milestones for Q4. We need to ensure we're on track with our deliverables and address any potential blockers.\n\nBest regards,\nJohn",
-  },
-  {
-    id: 2,
-    subject: 'New Feature Release',
-    date: '2025-10-13',
-    priority: 'Medium',
-    summary: 'Announcing the release of our new dashboard features',
-    body: "Hello everyone,\n\nWe're excited to announce the release of our new dashboard features. This includes improved analytics, customizable widgets, and better performance optimizations.\n\nRegards,\nProduct Team",
-  },
-  {
-    id: 3,
-    subject: 'Team Lunch Next Week',
-    date: '2025-10-12',
-    priority: 'Low',
-    summary: 'Planning for team lunch and social gathering',
-    body: "Hi all,\n\nLet's plan for a team lunch next week to celebrate our recent successes. Please fill out the preference form for restaurant options.\n\nCheers,\nHR Team",
-  },
-];
+import exampleEmails from '../test/exampleEmails';
+import { useEffect } from 'react';
 
 const getPriorityColor = (priority: Email['priority']): 'error' | 'warning' | 'success' | 'default' => {
   switch (priority.toLowerCase()) {
@@ -61,6 +36,116 @@ const getPriorityColor = (priority: Email['priority']): 'error' | 'warning' | 's
 const EmailList: React.FC = () => {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [emails, setEmails] = useState<Email[]>(exampleEmails);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      try {
+        const res = await fetch('/messages?limit=50');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const ct = res.headers.get('content-type') || '';
+        let data: any = null;
+        if (ct.includes('application/json')) {
+          data = await res.json();
+        } else {
+          // backend not available or returned HTML (e.g. index.html) — handle gracefully
+          const text = await res.text();
+          throw new Error('Unexpected response from server: ' + (text.slice(0, 200)));
+        }
+  // helper: extract best possible Date object from backend message dict
+        const parseMessageDate = (m: any): Date | null => {
+          // common fields from different serializers
+          const maybeNumber = m.internalDate ?? m.internal_date ?? m['internalDate'] ?? m['internal_date'];
+          if (maybeNumber) {
+            const n = Number(maybeNumber);
+            if (!Number.isNaN(n)) return new Date(n);
+          }
+
+          // fetched timestamps (ISO)
+          const maybeFetched = m.fetchedAt ?? m.fetched_at ?? m['fetchedAt'] ?? m['fetched_at'];
+          if (maybeFetched) {
+            const d = new Date(maybeFetched);
+            if (!Number.isNaN(d.getTime())) return d;
+          }
+
+          // headers (Date header)
+          const headers = m.headers ?? m['headers'];
+          if (headers) {
+            const headerDate = headers.Date ?? headers.date ?? headers['Date'] ?? headers['date'];
+            if (headerDate) {
+              const d = new Date(headerDate);
+              if (!Number.isNaN(d.getTime())) return d;
+            }
+          }
+
+          return null;
+        };
+
+        const formatter = new Intl.DateTimeFormat(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+
+        // Decode HTML entities and strip invisible/control characters
+        const decodeHtml = (input: string): string => {
+          if (!input) return '';
+          try {
+            const txt = document.createElement('textarea');
+            txt.innerHTML = input;
+            return txt.value;
+          } catch {
+            return input;
+          }
+        };
+
+        const sanitizeText = (input: string): string => {
+          if (!input) return '';
+          // decode HTML entities first (e.g. &#39; -> ')
+          let out = decodeHtml(input);
+          // remove invisible / format / control characters (zero-width spaces, BOM, etc.)
+          // Using Unicode property escape to remove all Other/format/control characters.
+          try {
+            out = out.replace(/\p{C}/gu, '');
+          } catch {
+            // Fallback: remove common invisible chars
+            out = out.replace(/[\u200B\u200C\u200D\uFEFF\u2060]/g, '');
+            out = out.replace(/[\x00-\x1F\x7F]/g, '');
+          }
+          return out;
+        };
+
+        // map backend message dict to Email type
+        const mapped: Email[] = data.map((m: any, idx: number) => {
+          const d = parseMessageDate(m);
+          const displayDate = d ? formatter.format(d) : '';
+          const rawSubject = m.subject ?? m['subject'] ?? 'No subject';
+          const rawSummary = m.snippet ?? '';
+          const rawBody = m.payload ? JSON.stringify(m.payload) : (m.raw ? m.raw : '');
+
+          return {
+            id: idx + 1,
+            subject: sanitizeText(String(rawSubject)),
+            date: displayDate,
+            priority: 'Low',
+            summary: sanitizeText(String(rawSummary)),
+            body: sanitizeText(String(rawBody)),
+          };
+        });
+        setEmails(mapped);
+      } catch (err: any) {
+        setError(String(err));
+        setEmails(exampleEmails);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
 
   const handleExpand = (id: number): void => {
     setExpandedId(expandedId === id ? null : id);
@@ -84,6 +169,16 @@ const EmailList: React.FC = () => {
         flexDirection: 'column'
       }}
     >
+      {/* show small status line for loading/error (keeps variables used for TS) */}
+      <Box sx={{ mb: 1 }}>
+        {loading && (
+          <Typography variant="caption" color="text.secondary">Loading messages…</Typography>
+        )}
+        {error && (
+          <Typography variant="caption" color="error">{error}</Typography>
+        )}
+      </Box>
+
       <List sx={{ 
         width: '100%',
         mx: 'auto',

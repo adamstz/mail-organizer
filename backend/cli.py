@@ -2,8 +2,8 @@
 
 Usage examples (local dev):
 
-    python -m src.cli run-server
-    python -m src.cli run-subscriber
+    python -m cli run-server
+    python -m cli run-subscriber
 """
 import os
 import logging
