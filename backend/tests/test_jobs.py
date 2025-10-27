@@ -1,3 +1,12 @@
+"""Tests for the job scripts that interact with Gmail helpers and storage.
+
+This module covers higher-level job behavior by stubbing Gmail client
+functions and asserting that jobs perform the expected side-effects
+
+Tests use monkeypatching to avoid network calls and to plug an
+`InMemoryStorage` implementation for deterministic assertions.
+"""
+
 import json
 import sys
 import types
@@ -5,6 +14,9 @@ import types
 import pytest
 
 
+# Ensure the register_watch job writes the watch response JSON file to the
+# user's home directory. This test stubs Gmail helpers and asserts the
+# expected file is created with the returned historyId.
 def test_register_watch_writes_file(monkeypatch, tmp_path):
     # set required env vars
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "id")
@@ -41,6 +53,9 @@ def test_register_watch_writes_file(monkeypatch, tmp_path):
     assert data["watch_response"]["historyId"] == "h123"
 
 
+# Verify the incremental pull job fetches messages (via a stubbed
+# fetch_messages_by_history) and persists them into the configured
+# storage backend (InMemoryStorage in this test).
 def test_pull_messages_saves_message(monkeypatch):
     # env for oauth checks
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "id")
@@ -86,6 +101,9 @@ def test_pull_messages_saves_message(monkeypatch):
     assert "m1" in ids
 
 
+# Verify the full inbox sync job iterates all message ids and saves each
+# message to storage. The job's list and fetch helpers are patched to
+# supply deterministic ids and message payloads.
 def test_pull_all_inbox_saves_messages(monkeypatch):
     # env for oauth checks
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "id")

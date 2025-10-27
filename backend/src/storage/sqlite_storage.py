@@ -52,6 +52,19 @@ class SQLiteStorage(StorageBackend):
             )
             """
         )
+        # Persisted classification records
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS classifications (
+                id TEXT PRIMARY KEY,
+                message_id TEXT,
+                labels TEXT,
+                priority TEXT,
+                model TEXT,
+                created_at TEXT
+            )
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -89,6 +102,60 @@ class SQLiteStorage(StorageBackend):
         )
         conn.commit()
         conn.close()
+
+    def save_classification_record(self, record) -> None:
+        """Persist a ClassificationRecord-like object."""
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO classifications
+            (id, message_id, labels, priority, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.message_id,
+                self._serialize(record.labels) if record.labels is not None else None,
+                record.priority,
+                record.model,
+                record.created_at.isoformat() if record.created_at is not None else None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def list_classification_records_for_message(self, message_id: str):
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM classifications WHERE message_id = ? ORDER BY created_at DESC", (message_id,))
+        rows = cur.fetchall()
+        conn.close()
+
+        out = []
+        from ..models.classification_record import ClassificationRecord
+        from datetime import datetime
+
+        for r in rows:
+            labels = self._deserialize(r[2]) or []
+            created_at = r[5]
+            created_dt = None
+            if created_at:
+                try:
+                    created_dt = datetime.fromisoformat(created_at)
+                except Exception:
+                    created_dt = None
+            out.append(
+                ClassificationRecord(
+                    id=r[0],
+                    message_id=r[1],
+                    labels=labels,
+                    priority=r[3],
+                    model=r[4],
+                    created_at=created_dt,
+                )
+            )
+        return out
 
     def get_message_ids(self) -> List[str]:
         conn = self.connect()

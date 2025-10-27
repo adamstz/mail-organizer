@@ -21,6 +21,8 @@ class InMemoryStorage(StorageBackend):
     def __init__(self):
         self._messages: dict[str, MailMessage] = {}
         self._meta: dict[str, str] = {}
+        # store classification records in memory for tests/dev
+        self._classifications: dict[str, list[dict]] = {}
 
     def init_db(self) -> None:
         self._messages.clear()
@@ -28,6 +30,10 @@ class InMemoryStorage(StorageBackend):
 
     def save_message(self, msg: MailMessage) -> None:
         self._messages[msg.id] = msg
+
+    def save_classification_record(self, record) -> None:
+        lst = self._classifications.setdefault(record.message_id, [])
+        lst.append(record.to_dict())
 
     def get_message_ids(self) -> List[str]:
         return list(self._messages.keys())
@@ -40,6 +46,14 @@ class InMemoryStorage(StorageBackend):
 
     def set_history_id(self, history_id: str) -> None:
         self._meta["historyId"] = history_id
+
+    def list_classification_records_for_message(self, message_id: str):
+        data = self._classifications.get(message_id, [])
+        from ..models.classification_record import ClassificationRecord
+        out = []
+        for d in data:
+            out.append(ClassificationRecord.from_dict(d))
+        return out
 
 
 def storage_factory_from_env() -> StorageBackend:
@@ -84,6 +98,14 @@ def get_message_ids() -> List[str]:
 
 def list_messages(limit: int = 100) -> List[MailMessage]:
     return _backend.list_messages(limit=limit)
+
+
+def save_classification_record(record) -> None:
+    _backend.save_classification_record(record)
+
+
+def list_classification_records_for_message(message_id: str):
+    return _backend.list_classification_records_for_message(message_id)
 
 
 def list_messages_dicts(limit: int = 100, offset: int = 0) -> List[dict]:

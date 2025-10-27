@@ -3,36 +3,47 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import EmailList from '../components/EmailList';
 
 describe('EmailList Component', () => {
-  it('renders email list with correct number of items', () => {
+  // Render smoke test: ensures the component renders the expected number
+  // of email list items (from the example fixture) without runtime errors.
+  it('renders email list with correct number of items', async () => {
     render(<EmailList />);
-    const emailItems = screen.getAllByRole('listitem');
+    const emailItems = await screen.findAllByRole('listitem');
     expect(emailItems).toHaveLength(3);
   });
 
-  it('shows email details when clicked', () => {
+  // Interaction test: clicking an email expands/shows its details/body.
+  it('shows email details when clicked', async () => {
     render(<EmailList />);
-    const firstEmail = screen.getByText('Project Update Meeting');
+    const firstEmail = await screen.findByText('Project Update Meeting');
     fireEvent.click(firstEmail);
-    
-    expect(screen.getByText(/Dear team/)).toBeInTheDocument();
+
+    expect(await screen.findByText(/Dear team/)).toBeInTheDocument();
   });
 
-  it('deletes email when delete button is clicked', () => {
+  // Action test: clicking the delete button removes the item from the list.
+  it('deletes email when delete button is clicked', async () => {
     render(<EmailList />);
-    const deleteButtons = screen.getAllByLabelText('delete');
-    const initialEmails = screen.getAllByRole('listitem');
-    
+    const deleteButtons = await screen.findAllByLabelText('delete');
+    const initialEmails = await screen.findAllByRole('listitem');
+
     fireEvent.click(deleteButtons[0]);
-    
-    const remainingEmails = screen.getAllByRole('listitem');
-    expect(remainingEmails.length).toBe(initialEmails.length - 1);
+
+    await screen.findAllByRole('listitem');
+    // wait for the list to update and assert the count decreased by one
+    await screen.findByText; // ensure async boundaries
+    await (async () => {
+      const remaining = screen.getAllByRole('listitem');
+      expect(remaining.length).toBe(initialEmails.length - 1);
+    })();
   });
 
-  it('displays priority chips with correct colors', () => {
+  // Visual assertion: each priority label renders as an MUI Chip with the
+  // expected color class (High -> error, Medium -> warning, Low -> success).
+  it('displays priority chips with correct colors', async () => {
     render(<EmailList />);
-    const highPriority = screen.getByText('High');
-    const mediumPriority = screen.getByText('Medium');
-    const lowPriority = screen.getByText('Low');
+    const highPriority = await screen.findByText('High');
+    const mediumPriority = await screen.findByText('Medium');
+    const lowPriority = await screen.findByText('Low');
 
     // The text node returned by getByText is the inner span of the MUI Chip.
     // Assert against the Chip wrapper (closest element with the MuiChip-root class)

@@ -1,3 +1,9 @@
+"""Tests for the storage subsystem.
+
+These tests exercise the public storage API surface used by the jobs and
+the API layer (init_db, save_message, get_message_ids, storage factory).
+"""
+
 import os
 import tempfile
 
@@ -5,7 +11,7 @@ import pytest
 
 from src.models.message import MailMessage
 
-
+# ensures the environment variable toggle causes the factory to return the InMemoryStorage.
 def test_factory_returns_inmemory_when_env_set(monkeypatch):
     monkeypatch.setenv("STORAGE_BACKEND", "memory")
     from src import storage
@@ -14,6 +20,8 @@ def test_factory_returns_inmemory_when_env_set(monkeypatch):
     assert type(backend).__name__ == "InMemoryStorage"
 
 
+# Verify that the in-memory storage can initialize, save a MailMessage,
+# and later return the saved message id via get_message_ids().
 def test_inmemory_save_and_get():
     from src.storage import InMemoryStorage
 
@@ -25,6 +33,8 @@ def test_inmemory_save_and_get():
     assert "1" in ids
 
 
+# Ensure that the SQLite backend creates the database file at the
+# provided path, can save a MailMessage, and exposes the saved id.
 def test_sqlite_backend_file(tmp_path):
     from src.storage import SQLiteStorage
 
