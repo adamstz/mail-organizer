@@ -46,7 +46,7 @@ const EmailList: React.FC = () => {
         const res = await fetch('/messages?limit=50');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const ct = res.headers.get('content-type') || '';
-        let data: any = null;
+        let data: unknown[] = [];
         if (ct.includes('application/json')) {
           data = await res.json();
         } else {
@@ -55,7 +55,7 @@ const EmailList: React.FC = () => {
           throw new Error('Unexpected response from server: ' + (text.slice(0, 200)));
         }
   // helper: extract best possible Date object from backend message dict
-        const parseMessageDate = (m: any): Date | null => {
+        const parseMessageDate = (m: Record<string, unknown>): Date | null => {
           // common fields from different serializers
           const maybeNumber = m.internalDate ?? m.internal_date ?? m['internalDate'] ?? m['internal_date'];
           if (maybeNumber) {
@@ -65,16 +65,17 @@ const EmailList: React.FC = () => {
 
           // fetched timestamps (ISO)
           const maybeFetched = m.fetchedAt ?? m.fetched_at ?? m['fetchedAt'] ?? m['fetched_at'];
-          if (maybeFetched) {
+          if (maybeFetched && (typeof maybeFetched === 'string' || typeof maybeFetched === 'number')) {
             const d = new Date(maybeFetched);
             if (!Number.isNaN(d.getTime())) return d;
           }
 
           // headers (Date header)
           const headers = m.headers ?? m['headers'];
-          if (headers) {
-            const headerDate = headers.Date ?? headers.date ?? headers['Date'] ?? headers['date'];
-            if (headerDate) {
+          if (headers && typeof headers === 'object' && headers !== null) {
+            const headersObj = headers as Record<string, unknown>;
+            const headerDate = headersObj.Date ?? headersObj.date ?? headersObj['Date'] ?? headersObj['date'];
+            if (headerDate && (typeof headerDate === 'string' || typeof headerDate === 'number')) {
               const d = new Date(headerDate);
               if (!Number.isNaN(d.getTime())) return d;
             }
@@ -109,18 +110,13 @@ const EmailList: React.FC = () => {
           let out = decodeHtml(input);
           // remove invisible / format / control characters (zero-width spaces, BOM, etc.)
           // Using Unicode property escape to remove all Other/format/control characters.
-          try {
-            out = out.replace(/\p{C}/gu, '');
-          } catch {
-            // Fallback: remove common invisible chars
-            out = out.replace(/[\u200B\u200C\u200D\uFEFF\u2060]/g, '');
-            out = out.replace(/[\x00-\x1F\x7F]/g, '');
-          }
+          // eslint-disable-next-line no-misleading-character-class, no-control-regex
+          out = out.replace(/\p{C}/gu, '');
           return out;
         };
 
         // map backend message dict to Email type
-        const mapped: Email[] = data.map((m: any, idx: number) => {
+        const mapped: Email[] = (data as Record<string, unknown>[]).map((m: Record<string, unknown>, idx: number) => {
           const d = parseMessageDate(m);
           const displayDate = d ? formatter.format(d) : '';
           const rawSubject = m.subject ?? m['subject'] ?? 'No subject';
@@ -137,8 +133,8 @@ const EmailList: React.FC = () => {
           };
         });
         setEmails(mapped);
-      } catch (err: any) {
-        setError(String(err));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
         setEmails(exampleEmails);
       } finally {
         setLoading(false);

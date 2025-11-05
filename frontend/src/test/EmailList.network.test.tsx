@@ -9,7 +9,7 @@ import { render, screen } from '@testing-library/react';
 import EmailList from '../components/EmailList';
 
 describe('EmailList network error handling', () => {
-  let origFetch: any;
+  let origFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
     origFetch = globalThis.fetch;
@@ -24,9 +24,9 @@ describe('EmailList network error handling', () => {
     globalThis.fetch = async () => ({
       ok: true,
       status: 200,
-      headers: { get: (_: string) => 'text/html; charset=utf-8' },
+      headers: { get: () => 'text/html; charset=utf-8' },
       text: async () => '<!doctype html><html><body>index</body></html>',
-    } as any);
+    }) as unknown as Response;
 
     render(<EmailList />);
 
