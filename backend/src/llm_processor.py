@@ -29,7 +29,7 @@ class LLMProcessor:
     SYSTEM_MESSAGE = "You are an email classification assistant. Return only valid JSON with no explanations."
     TEMPERATURE = 0.3
     MAX_TOKENS = 200
-    TIMEOUT = 30
+    TIMEOUT = 60  # Increased for slower local models
     
     def __init__(self, config: Dict | None = None):
         self.config = config or {}
@@ -39,7 +39,13 @@ class LLMProcessor:
     def _detect_provider(self) -> str:
         """Auto-detect which LLM provider to use based on env vars."""
         provider = os.environ.get("LLM_PROVIDER", "").lower()
-        if provider in ("openai", "anthropic", "ollama", "command", "rules"):
+        
+        # If explicitly set to rules (for testing), allow it
+        if provider == "rules":
+            return provider
+        
+        # Check for explicit provider setting
+        if provider in ("openai", "anthropic", "ollama", "command"):
             return provider
         
         # Auto-detect based on available API keys or running services
@@ -52,7 +58,15 @@ class LLMProcessor:
         if os.environ.get("ORGANIZE_MAIL_LLM_CMD"):
             return "command"
         
-        return "rules"  # fallback to keyword-based
+        # No LLM provider available - raise error
+        raise RuntimeError(
+            "No LLM provider configured. Please set one of:\n"
+            "  - OPENAI_API_KEY for OpenAI\n"
+            "  - ANTHROPIC_API_KEY for Anthropic/Claude\n"
+            "  - Start Ollama server (ollama serve)\n"
+            "  - ORGANIZE_MAIL_LLM_CMD for custom command\n"
+            "  - LLM_PROVIDER=rules for testing only (keyword-based)"
+        )
 
     def _is_ollama_running(self) -> bool:
         """Check if Ollama is running and accessible."""
@@ -222,7 +236,8 @@ Subject: {subject}
 Body: {body_truncated}
 
 Instructions:
-- Choose the most relevant category labels from: finance, security, meetings, personal, work, shopping, social, news, promotions, spam
+- Choose the most relevant category labels from: finance, banking, investments, security, authentication, meetings, appointments, personal, work, career, job, job-application, job-applied, job-pending, job-interview, job-rejected, job-offer, job-followup, shopping, ecommerce, social, entertainment, news, newsletters, promotions, marketing, spam, travel, health, education, legal, taxes, receipts, notifications, updates, alerts, support, bills, insurance
+- Job labels guide: use 'job-application' for any job-related email, then add specific status like 'job-applied' (confirmation you applied), 'job-pending' (awaiting response), 'job-interview' (interview scheduled), 'job-rejected' (rejection), 'job-offer' (offer received), 'job-followup' (follow-up communications)
 - Assign priority: "high" (urgent/important), "normal" (routine), or "low" (can wait)
 - Write a brief summary (1-2 sentences) of the email's main purpose
 - Return ONLY a JSON object in this exact format:

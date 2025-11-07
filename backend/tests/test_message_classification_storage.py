@@ -8,7 +8,7 @@ from src.storage.sqlite_storage import SQLiteStorage
 
 
 def test_message_with_classification_fields():
-    """Test that messages with classification data can be saved and retrieved."""
+    """Test that messages with classification data can be saved and retrieved using new API."""
     # Use a temporary database file
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
@@ -17,25 +17,28 @@ def test_message_with_classification_fields():
         storage = SQLiteStorage(db_path=db_path)
         storage.init_db()
         
-        # Create a message with classification data
+        # Create a message (without classification data initially)
         msg = MailMessage(
             id="test-123",
             subject="URGENT: Invoice Payment Due",
             snippet="Please pay invoice by tomorrow",
             from_="billing@example.com",
-            classification_labels=["finance", "urgent"],
-            priority="high",
-            summary="Payment reminder for outstanding invoice",
         )
         
         # Save the message
         storage.save_message(msg)
         
-        # Retrieve the message
-        messages = storage.list_messages(limit=10)
+        # Create classification using new API
+        classification_id = storage.create_classification(
+            message_id="test-123",
+            labels=["finance", "urgent"],
+            priority="high",
+            summary="Payment reminder for outstanding invoice",
+            model="test-model"
+        )
         
-        assert len(messages) == 1
-        retrieved = messages[0]
+        # Retrieve the message (should have classification via JOIN)
+        retrieved = storage.get_message_by_id("test-123")
         
         # Verify classification fields were persisted
         assert retrieved.id == "test-123"
@@ -87,7 +90,7 @@ def test_message_without_classification_fields():
 
 
 def test_update_message_with_classification():
-    """Test that we can update a message to add classification data."""
+    """Test that we can add classification data to an existing message using new API."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
     
@@ -104,16 +107,23 @@ def test_update_message_with_classification():
         )
         storage.save_message(msg)
         
-        # Later, update the same message with classification data
-        msg.classification_labels = ["work", "important"]
-        msg.priority = "normal"
-        msg.summary = "Work-related email requiring attention"
-        storage.save_message(msg)
+        # Verify no classification initially
+        retrieved = storage.get_message_by_id("test-789")
+        assert retrieved.classification_labels is None
+        assert retrieved.priority is None
+        assert retrieved.summary is None
         
-        # Retrieve and verify
-        messages = storage.list_messages(limit=10)
-        assert len(messages) == 1
-        retrieved = messages[0]
+        # Add classification using new API
+        storage.create_classification(
+            message_id="test-789",
+            labels=["work", "important"],
+            priority="normal",
+            summary="Work-related email requiring attention",
+            model="test-model"
+        )
+        
+        # Retrieve and verify classification was added
+        retrieved = storage.get_message_by_id("test-789")
         
         assert retrieved.classification_labels == ["work", "important"]
         assert retrieved.priority == "normal"

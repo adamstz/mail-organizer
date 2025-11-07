@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint format clean
+.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint format clean classify classify-force pull-inbox
 
 # Python virtual environment
 VENV_PATH = ../.venv
@@ -20,42 +20,49 @@ help:
 	@echo "  make lint           - Run flake8 linter"
 	@echo "  make format         - Format code with black"
 	@echo "  make clean          - Remove cache and temp files"
+	@echo ""
+	@echo "Classification commands:"
+	@echo "  make classify       - Classify all unclassified messages"
+	@echo "  make classify-force - Re-classify all messages (even if already classified)"
+	@echo ""
+	@echo "Gmail sync commands:"
+	@echo "  make pull-inbox     - Pull all messages from Gmail INBOX to database"
 
 # Run all tests
 test:
-	PYTHONPATH=. $(PYTEST) tests/ -v
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -v
 
 # Run all tests with extra verbosity
 test-all:
-	PYTHONPATH=. $(PYTEST) tests/ -vv --tb=short
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -vv --tb=short
 
 # Run only unit tests (excludes smoke)
 test-unit:
-	PYTHONPATH=. $(PYTEST) tests/ -v --ignore=tests/smoke/
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -v --ignore=tests/smoke/
 
 # Run smoke tests only
 test-smoke:
-	PYTHONPATH=. $(PYTEST) tests/test_smoke.py -v
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/test_smoke.py -v
 
 # Run LLM processor tests only
 test-llm:
-	PYTHONPATH=. $(PYTEST) tests/test_llm_processor.py -v
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/test_llm_processor.py -v
 
 # Run storage tests only
 test-storage:
-	PYTHONPATH=. $(PYTEST) tests/test_storage.py -v
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/test_storage.py -v
 
 # Run job tests only
 test-jobs:
-	PYTHONPATH=. $(PYTEST) tests/test_jobs.py -v
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/test_jobs.py -v
 
 # Run API tests only
 test-api:
-	PYTHONPATH=. $(PYTEST) tests/test_api_messages.py -v
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/test_api_messages.py -v
 
-# Run tests with coverage report
+# Run tests with coverage
 test-cov:
-	PYTHONPATH=. $(PYTEST) tests/ --cov=src/ --cov-report=term-missing --cov-report=html
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ --cov=src --cov-report=term-missing --cov-report=html
 	@echo "Coverage report generated in htmlcov/index.html"
 
 # Run linter
@@ -95,3 +102,15 @@ test-file:
 test-func:
 	@test -n "$(FUNC)" || (echo "Usage: make test-func FUNC=test_function_name" && exit 1)
 	PYTHONPATH=. $(PYTEST) -k "$(FUNC)" -v
+
+# Classify all unclassified messages
+classify:
+	$(PYTHON) -m src.jobs.classify_all
+
+# Re-classify all messages (force mode)
+classify-force:
+	$(PYTHON) -m src.jobs.classify_all --force
+
+# Pull all messages from Gmail INBOX
+pull-inbox:
+	$(PYTHON) -m src.jobs.pull_all_inbox --save-history

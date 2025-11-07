@@ -41,26 +41,38 @@ class SQLiteStorage(StorageBackend):
                 raw TEXT,
                 headers TEXT,
                 fetched_at TEXT,
-                classification_labels TEXT,
-                priority TEXT,
-                summary TEXT
+                has_attachments INTEGER,
+                latest_classification_id TEXT,
+                FOREIGN KEY(latest_classification_id) REFERENCES classifications(id)
             )
             """
         )
         
-        # Add classification columns to existing tables (migration)
+        # Migration: Add latest_classification_id column to existing tables
+        try:
+            cur.execute("ALTER TABLE messages ADD COLUMN latest_classification_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        # Migration: Add has_attachments if it doesn't exist
+        try:
+            cur.execute("ALTER TABLE messages ADD COLUMN has_attachments INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        # Keep old classification columns for backward compatibility during migration
         try:
             cur.execute("ALTER TABLE messages ADD COLUMN classification_labels TEXT")
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
         try:
             cur.execute("ALTER TABLE messages ADD COLUMN priority TEXT")
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
         try:
             cur.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
         
         cur.execute(
             """
@@ -70,17 +82,34 @@ class SQLiteStorage(StorageBackend):
             )
             """
         )
-        # Persisted classification records
+        
+        # Classifications table - now the primary source of truth
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS classifications (
                 id TEXT PRIMARY KEY,
-                message_id TEXT,
+                message_id TEXT NOT NULL,
                 labels TEXT,
                 priority TEXT,
+                summary TEXT,
                 model TEXT,
-                created_at TEXT
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(message_id) REFERENCES messages(id)
             )
+            """
+        )
+        
+        # Create index for faster lookups
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_classifications_message_id 
+            ON classifications(message_id)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_classifications_created_at 
+            ON classifications(created_at DESC)
             """
         )
         conn.commit()
@@ -100,8 +129,8 @@ class SQLiteStorage(StorageBackend):
         cur.execute(
             """
             INSERT OR REPLACE INTO messages
-            (id, thread_id, from_addr, to_addr, subject, snippet, labels, internal_date, payload, raw, headers, fetched_at, classification_labels, priority, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, thread_id, from_addr, to_addr, subject, snippet, labels, internal_date, payload, raw, headers, fetched_at, classification_labels, priority, summary, has_attachments)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 msg.id,
@@ -119,6 +148,7 @@ class SQLiteStorage(StorageBackend):
                 self._serialize(msg.classification_labels) if msg.classification_labels is not None else None,
                 msg.priority,
                 msg.summary,
+                1 if msg.has_attachments else 0,
             ),
         )
         conn.commit()
@@ -178,6 +208,84 @@ class SQLiteStorage(StorageBackend):
             )
         return out
 
+    def create_classification(self, message_id: str, labels: List[str], priority: str, summary: str, model: str = None) -> str:
+        """Create a new classification record and link it to the message.
+        
+        Returns the classification ID.
+        """
+        import uuid
+        from datetime import datetime, timezone
+        
+        classification_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        # Insert classification record
+        cur.execute(
+            """
+            INSERT INTO classifications
+            (id, message_id, labels, priority, summary, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                classification_id,
+                message_id,
+                self._serialize(labels) if labels else None,
+                priority,
+                summary,
+                model,
+                created_at,
+            ),
+        )
+        
+        # Update message to point to this latest classification
+        cur.execute(
+            """
+            UPDATE messages
+            SET latest_classification_id = ?
+            WHERE id = ?
+            """,
+            (classification_id, message_id),
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        return classification_id
+    
+    def get_latest_classification(self, message_id: str) -> Optional[dict]:
+        """Get the most recent classification for a message.
+        
+        Returns dict with: id, labels, priority, summary, model, created_at
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT c.id, c.labels, c.priority, c.summary, c.model, c.created_at
+            FROM classifications c
+            INNER JOIN messages m ON m.latest_classification_id = c.id
+            WHERE m.id = ?
+            """,
+            (message_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
+        return {
+            "id": row[0],
+            "labels": self._deserialize(row[1]) if row[1] else [],
+            "priority": row[2],
+            "summary": row[3],
+            "model": row[4],
+            "created_at": row[5],
+        }
+
     def get_message_ids(self) -> List[str]:
         conn = self.connect()
         cur = conn.cursor()
@@ -185,11 +293,93 @@ class SQLiteStorage(StorageBackend):
         rows = cur.fetchall()
         conn.close()
         return [r[0] for r in rows]
-
-    def list_messages(self, limit: int = 100) -> List[MailMessage]:
+    
+    def get_message_by_id(self, message_id: str) -> Optional[MailMessage]:
+        """Get a single message by ID with latest classification."""
         conn = self.connect()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM messages ORDER BY fetched_at DESC LIMIT ?", (limit,))
+        cur.execute(
+            """
+            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.id = ?
+            """,
+            (message_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
+        # Parse row data - classification from JOIN comes last
+        labels = self._deserialize(row[6])
+        payload = self._deserialize(row[8])
+        headers = self._deserialize(row[10]) or {}
+        has_attachments = bool(row[11]) if len(row) > 11 and row[11] is not None else False
+        
+        # Classification data from the JOIN (last 3 columns)
+        classification_labels = self._deserialize(row[-3]) if row[-3] else None
+        priority = row[-2]
+        summary = row[-1]
+        
+        return MailMessage(
+            id=row[0],
+            thread_id=row[1],
+            from_=row[2],
+            to=row[3],
+            subject=row[4],
+            snippet=row[5],
+            labels=labels,
+            internal_date=row[7],
+            payload=payload,
+            raw=row[9],
+            headers=headers,
+            classification_labels=classification_labels,
+            priority=priority,
+            summary=summary,
+            has_attachments=has_attachments,
+        )
+    
+    def get_unclassified_message_ids(self) -> List[str]:
+        """Get IDs of messages that haven't been classified yet."""
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id FROM messages 
+            WHERE latest_classification_id IS NULL
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    
+    def count_classified_messages(self) -> int:
+        """Count how many messages have been classified."""
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM messages 
+            WHERE latest_classification_id IS NOT NULL
+        """)
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
+
+    def list_messages(self, limit: int = 100, offset: int = 0) -> List[MailMessage]:
+        """List messages with their latest classifications."""
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            ORDER BY m.fetched_at DESC 
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset)
+        )
         rows = cur.fetchall()
         conn.close()
         out: List[MailMessage] = []
@@ -197,9 +387,13 @@ class SQLiteStorage(StorageBackend):
             labels = self._deserialize(r[6])
             payload = self._deserialize(r[8])
             headers = self._deserialize(r[10]) or {}
-            classification_labels = self._deserialize(r[12]) if len(r) > 12 else None
-            priority = r[13] if len(r) > 13 else None
-            summary = r[14] if len(r) > 14 else None
+            has_attachments = bool(r[11]) if len(r) > 11 and r[11] is not None else False
+            
+            # Classification data from the JOIN (last 3 columns)
+            classification_labels = self._deserialize(r[-3]) if r[-3] else None
+            priority = r[-2]
+            summary = r[-1]
+            
             out.append(
                 MailMessage(
                     id=r[0],
@@ -216,6 +410,7 @@ class SQLiteStorage(StorageBackend):
                     classification_labels=classification_labels,
                     priority=priority,
                     summary=summary,
+                    has_attachments=has_attachments,
                 )
             )
         return out

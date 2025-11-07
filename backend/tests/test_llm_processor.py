@@ -17,6 +17,7 @@ class TestLLMProcessorConstants:
 
     def test_constants_are_set(self):
         """Verify all shared constants exist and have reasonable values."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         
         assert processor.SYSTEM_MESSAGE is not None
@@ -25,7 +26,9 @@ class TestLLMProcessorConstants:
         
         assert processor.TEMPERATURE == 0.3
         assert processor.MAX_TOKENS == 200
-        assert processor.TIMEOUT == 30
+        assert processor.TIMEOUT == 60  # Updated timeout
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
 
 class TestProviderDetection:
@@ -45,14 +48,30 @@ class TestProviderDetection:
         assert processor.provider == "openai"
         os.environ.pop("LLM_PROVIDER", None)
 
-    def test_fallback_to_rules_when_nothing_available(self):
-        """Should fallback to rules when no providers detected."""
+    def test_raises_error_when_nothing_available(self, monkeypatch):
+        """Should raise error when no providers detected and not explicitly rules."""
         # Clear all provider-related env vars
         for key in ["LLM_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ORGANIZE_MAIL_LLM_CMD"]:
             os.environ.pop(key, None)
         
+        # Mock _is_ollama_running to return False
+        def fake_ollama_check(self):
+            return False
+        monkeypatch.setattr(LLMProcessor, "_is_ollama_running", fake_ollama_check)
+        
+        with pytest.raises(RuntimeError, match="No LLM provider configured"):
+            LLMProcessor()
+    
+    def test_explicit_rules_provider_works(self):
+        """LLM_PROVIDER=rules should work for testing."""
+        # Clear all other providers
+        for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ORGANIZE_MAIL_LLM_CMD"]:
+            os.environ.pop(key, None)
+        
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         assert processor.provider == "rules"
+        os.environ.pop("LLM_PROVIDER", None)
 
 
 class TestModelNameSelection:
@@ -100,21 +119,28 @@ class TestPromptBuilding:
 
     def test_prompt_includes_instructions(self):
         """Prompt should include classification instructions."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         prompt = processor._build_classification_prompt("Test", "Test body")
         
         assert "labels" in prompt.lower()
         assert "priority" in prompt.lower()
         assert "json" in prompt.lower()
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_prompt_truncates_long_body(self):
         """Long email bodies should be truncated to avoid token limits."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         long_body = "x" * 5000  # 5000 characters
         prompt = processor._build_classification_prompt("Test", long_body)
         
         # Body should be truncated to 2000 chars max
-        assert len(prompt) < 3000  # Prompt + truncated body
+        # Prompt is longer now due to expanded label list (~1300 chars)
+        assert len(prompt) < 3500  # Prompt + truncated body
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
 
 class TestResponseParsing:
@@ -122,6 +148,7 @@ class TestResponseParsing:
 
     def test_parse_valid_json(self):
         """Should parse valid JSON response."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"labels": ["finance", "work"], "priority": "high", "summary": "Invoice payment due"}'
         result = processor._parse_llm_response(response)
@@ -129,9 +156,12 @@ class TestResponseParsing:
         assert result["labels"] == ["finance", "work"]
         assert result["priority"] == "high"
         assert result["summary"] == "Invoice payment due"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_json_with_markdown_backticks(self):
         """Should extract JSON from markdown code blocks."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '```json\n{"labels": ["security"], "priority": "normal", "summary": "Security alert"}\n```'
         result = processor._parse_llm_response(response)
@@ -139,9 +169,12 @@ class TestResponseParsing:
         assert result["labels"] == ["security"]
         assert result["priority"] == "normal"
         assert result["summary"] == "Security alert"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_singular_label_field(self):
         """Should handle 'label' (singular) and convert to 'labels' (plural)."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"label": "finance", "priority": "high"}'
         result = processor._parse_llm_response(response)
@@ -149,47 +182,64 @@ class TestResponseParsing:
         assert "labels" in result
         assert result["labels"] == ["finance"]
         assert "label" not in result
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_comma_separated_labels(self):
         """Should handle comma-separated label strings."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"label": "finance,work,security", "priority": "high"}'
         result = processor._parse_llm_response(response)
         
         assert result["labels"] == ["finance", "work", "security"]
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_missing_priority_defaults_to_normal(self):
         """Should default to 'normal' priority if missing."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"labels": ["finance"], "summary": "Test"}'
         result = processor._parse_llm_response(response)
         
         assert result["priority"] == "normal"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_missing_summary_defaults_to_empty(self):
         """Should default to empty string if summary missing."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"labels": ["finance"], "priority": "high"}'
         result = processor._parse_llm_response(response)
         
         assert result["summary"] == ""
         assert isinstance(result["summary"], str)
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_normalizes_priority_case(self):
         """Should normalize priority to lowercase."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"labels": ["finance"], "priority": "HIGH"}'
         result = processor._parse_llm_response(response)
         
         assert result["priority"] == "high"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_parse_invalid_priority_defaults_to_normal(self):
         """Should default invalid priority values to 'normal'."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         response = '{"labels": ["finance"], "priority": "urgent"}'
         result = processor._parse_llm_response(response)
         
         assert result["priority"] == "normal"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
 
 class TestRuleBasedClassification:
@@ -197,6 +247,7 @@ class TestRuleBasedClassification:
 
     def test_finance_keywords(self):
         """Should detect finance-related emails."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         result = processor._rule_based(
             "Invoice #12345",
@@ -206,9 +257,12 @@ class TestRuleBasedClassification:
         assert "finance" in result["labels"]
         assert "summary" in result
         assert result["summary"] == "Invoice #12345"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_security_keywords(self):
         """Should detect security-related emails and mark as high priority."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         result = processor._rule_based(
             "Security Alert",
@@ -217,9 +271,12 @@ class TestRuleBasedClassification:
         
         assert "security" in result["labels"]
         assert result["priority"] == "high"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_meeting_keywords(self):
         """Should detect meeting-related emails."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         result = processor._rule_based(
             "Team Meeting Tomorrow",
@@ -227,9 +284,12 @@ class TestRuleBasedClassification:
         )
         
         assert "meetings" in result["labels"]
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
     def test_urgent_keywords_set_high_priority(self):
         """Should set high priority for urgent keywords."""
+        os.environ["LLM_PROVIDER"] = "rules"
         processor = LLMProcessor()
         result = processor._rule_based(
             "URGENT: Action Required",
@@ -237,6 +297,8 @@ class TestRuleBasedClassification:
         )
         
         assert result["priority"] == "high"
+        
+        os.environ.pop("LLM_PROVIDER", None)
 
 
 class TestCategorizeMessage:

@@ -18,6 +18,7 @@ class MailMessage:
     payload: Optional[Dict[str, Any]] = None
     raw: Optional[str] = None
     headers: Dict[str, str] = field(default_factory=dict)
+    has_attachments: bool = False
     
     # Classification fields (populated by LLM processor)
     classification_labels: Optional[List[str]] = None
@@ -41,6 +42,7 @@ class MailMessage:
             "classification_labels": self.classification_labels,
             "priority": self.priority,
             "summary": self.summary,
+            "has_attachments": self.has_attachments,
         }
 
     @classmethod
@@ -56,6 +58,9 @@ class MailMessage:
         except (TypeError, ValueError):
             internal_date = None
 
+        # Detect attachments by checking for parts with filename
+        has_attachments = cls._has_attachments(payload) if payload else False
+
         return cls(
             id=msg.get("id"),
             thread_id=msg.get("threadId"),
@@ -68,4 +73,40 @@ class MailMessage:
             payload=payload,
             raw=msg.get("raw"),
             headers=headers,
+            has_attachments=has_attachments,
         )
+
+    @staticmethod
+    def _has_attachments(payload: Optional[Dict[str, Any]]) -> bool:
+        """Check if the message payload contains attachments.
+        
+        An attachment is identified by:
+        - A part with a non-empty filename, OR
+        - A part with Content-Disposition header containing "attachment"
+        """
+        if not payload:
+            return False
+        
+        def _check_part(part: Dict[str, Any]) -> bool:
+            # Check for filename
+            filename = part.get("filename", "")
+            if filename:
+                return True
+            
+            # Check for attachment disposition in headers
+            headers = part.get("headers", [])
+            for header in headers:
+                if header.get("name", "").lower() == "content-disposition":
+                    value = header.get("value", "").lower()
+                    if "attachment" in value:
+                        return True
+            
+            # Recursively check nested parts (multipart messages)
+            parts = part.get("parts", [])
+            for subpart in parts:
+                if _check_part(subpart):
+                    return True
+            
+            return False
+        
+        return _check_part(payload)

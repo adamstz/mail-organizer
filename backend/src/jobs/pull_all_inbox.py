@@ -9,7 +9,7 @@ to ~/.organize_mail_watch.json so future runs can be incremental.
 
 Run as:
   cd backend
-  python -m src.pull_all_inbox --limit 100 --workers 8 --save-history
+  python -m src.pull_all_inbox --limit 100     parser.add_argument("--workers", type=int, default=1, help="(Deprecated - now sequential for stability)") --save-history
 
 Warnings:
 - Full mailbox synces can be slow and consume API quota. Prefer history API
@@ -21,7 +21,7 @@ import argparse
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -49,27 +49,35 @@ def list_all_message_ids(service, user_id: str = "me", label_ids: Optional[List[
     return ids
 
 
-def fetch_messages_parallel(service, msg_ids: List[str], max_workers: int = 8, fmt: str = "full") -> List[dict]:
-    """Fetch messages in parallel using ThreadPoolExecutor."""
+def fetch_messages_sequential(service, msg_ids: List[str], fmt: str = "full") -> List[dict]:
+    """Fetch messages sequentially (no parallelism) for stability."""
     results: List[dict] = []
-    def _get(mid: str) -> dict:
-        return fetch_message(service, mid, format=fmt)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as exe:
-        futures = {exe.submit(_get, mid): mid for mid in msg_ids}
-        for fut in as_completed(futures):
-            mid = futures[fut]
-            try:
-                results.append(fut.result())
-            except Exception as exc:
-                # don't abort whole run on single-message failure
+    total = len(msg_ids)
+    failed = 0
+    
+    for i, mid in enumerate(msg_ids, 1):
+        try:
+            msg = fetch_message(service, mid, format=fmt)
+            results.append(msg)
+            if i % 10 == 0 or i == total:
+                print(f"  Fetched {i}/{total} messages... ({failed} failed)", file=sys.stderr)
+        except Exception as exc:
+            failed += 1
+            if failed <= 10:  # Only print first 10 errors
                 print(f"Failed to fetch {mid}: {exc}", file=sys.stderr)
+            elif failed == 11:
+                print(f"  (suppressing further error messages...)", file=sys.stderr)
+    
+    if failed > 0:
+        print(f"\n⚠️  Warning: {failed} messages failed to fetch", file=sys.stderr)
+    
     return results
 
 
 def message_summary(msg: dict) -> MailMessage:
     # Convert raw API message dict to a MailMessage object
-    return MailMessage.from_api_message(msg, include_payload=False)
+    # Note: include_payload=True to enable attachment detection
+    return MailMessage.from_api_message(msg, include_payload=True)
 
 
 def save_history_id(path: str, history_id: str) -> None:
@@ -83,11 +91,13 @@ def save_history_id(path: str, history_id: str) -> None:
 
 
 def main():
+    start_time = time.time()
+    
     parser = argparse.ArgumentParser(description="Full sync: pull all messages from INBOX")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of messages fetched (0 = no limit)")
     parser.add_argument("--workers", type=int, default=8, help="Parallel workers for fetching")
     parser.add_argument("--save-history", action="store_true", help="After sync, save current historyId to ~/.organize_mail_watch.json")
-    parser.add_argument("--format", choices=("full", "metadata", "minimal", "raw"), default="metadata", help="Message format to fetch (default: metadata)")
+    parser.add_argument("--format", choices=("full", "metadata", "minimal", "raw"), default="full", help="Message format to fetch (default: full, needed for attachment detection)")
     args = parser.parse_args()
 
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -106,9 +116,11 @@ def main():
     existing_ids = set(storage.get_message_ids())
 
     print("Listing message IDs in INBOX (may take a while)...")
+    list_start = time.time()
     all_ids = list_all_message_ids(service, label_ids=["INBOX"])
+    list_time = time.time() - list_start
     total = len(all_ids)
-    print(f"Found {total} message IDs in INBOX")
+    print(f"Found {total} message IDs in INBOX (took {list_time:.1f}s)")
 
     if args.limit > 0:
         ids_to_fetch = all_ids[: args.limit]
@@ -121,15 +133,58 @@ def main():
 
     # skip any IDs already stored in DB
     ids_to_fetch = [mid for mid in ids_to_fetch if mid not in existing_ids]
-    print(f"Fetching {len(ids_to_fetch)} messages with {args.workers} workers (format={args.format})...")
-    messages = fetch_messages_parallel(service, ids_to_fetch, max_workers=args.workers, fmt=args.format)
+    
+    if not ids_to_fetch:
+        print("All messages already in database.")
+        return
+    
+    print(f"Fetching {len(ids_to_fetch)} messages (format={args.format})...")
+    print("Processing in batches (sequential fetching for stability)...\n")
+    
+    # Process in batches to avoid memory issues with large mailboxes
+    BATCH_SIZE = 100
+    total_to_fetch = len(ids_to_fetch)
+    total_saved = 0
+    total_failed = 0
+    with_attachments = 0
+    
+    fetch_start = time.time()
+    
+    for i in range(0, len(ids_to_fetch), BATCH_SIZE):
+        batch = ids_to_fetch[i:i+BATCH_SIZE]
+        batch_num = (i // BATCH_SIZE) + 1
+        total_batches = (len(ids_to_fetch) + BATCH_SIZE - 1) // BATCH_SIZE
+        
+        print(f"📦 Batch {batch_num}/{total_batches}: Fetching {len(batch)} messages...", file=sys.stderr)
+        
+        messages = fetch_messages_sequential(service, batch, fmt=args.format)
+        total_failed += (len(batch) - len(messages))
+        
+        # Process and save batch immediately
+        for msg in messages:
+            mail_obj = message_summary(msg)
+            if mail_obj.has_attachments:
+                with_attachments += 1
+            storage.save_message(mail_obj)
+            total_saved += 1
+        
+        progress_pct = ((i + len(batch)) / total_to_fetch) * 100
+        print(f"  ✓ Saved {total_saved} messages so far ({progress_pct:.1f}% complete)\n", file=sys.stderr)
+    
+    fetch_time = time.time() - fetch_start
+    total_time = time.time() - start_time
 
-    mail_objs = [message_summary(m) for m in messages]
-    for m in mail_objs:
-        storage.save_message(m)
+    print(f"\n✅ Successfully saved {total_saved} messages to database")
+    if total_failed > 0:
+        print(f"⚠️  {total_failed} messages failed to fetch")
+    print(f"📎 {with_attachments} messages have attachments")
+    print(f"💾 Database: {storage.get_storage_backend().db_path if hasattr(storage.get_storage_backend(), 'db_path') else 'in-memory'}")
+    print(f"\n⏱️  Timing:")
+    print(f"  List IDs:    {list_time:.1f}s")
+    print(f"  Fetch+Save:  {fetch_time:.1f}s ({total_saved/fetch_time:.1f} msg/s)" if fetch_time > 0 else f"  Fetch+Save:  {fetch_time:.1f}s")
+    print(f"  Total:       {total_time:.1f}s")
 
-    summaries = [m.to_dict() for m in mail_objs]
-    print(json.dumps(summaries, indent=2))
+    # Note: We don't print JSON summaries anymore since we process in batches
 
     if args.save_history:
         # Get current profile to obtain a historyId to use for future incremental syncs
