@@ -5,6 +5,7 @@ google-auth-oauthlib
 google-cloud-pubsub
 pydantic
 httpx  # Required for FastAPI TestClient
+psycopg2-binary>=2.9.0  # PostgreSQL adapter
 
 # LLM providers (optional - install what you need)
 openai>=1.0.0

@@ -123,11 +123,24 @@ def storage_factory_from_env() -> StorageBackend:
 
     Supported values:
       - sqlite (default)
+      - postgres (requires DATABASE_URL or POSTGRES_* env vars)
       - memory
     """
     mode = os.environ.get("STORAGE_BACKEND", "sqlite").lower()
     if mode == "memory" or mode == "inmemory":
         return InMemoryStorage()
+    elif mode == "postgres" or mode == "postgresql":
+        from .postgres_storage import PostgresStorage
+        db_url = os.environ.get("DATABASE_URL")
+        if not db_url:
+            # Build from individual components if DATABASE_URL not set
+            user = os.environ.get("POSTGRES_USER", "postgres")
+            password = os.environ.get("POSTGRES_PASSWORD", "")
+            host = os.environ.get("POSTGRES_HOST", "localhost")
+            port = os.environ.get("POSTGRES_PORT", "5432")
+            database = os.environ.get("POSTGRES_DB", "mail_db")
+            db_url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
+        return PostgresStorage(db_url=db_url)
     # default: sqlite
     db_path = os.environ.get("STORAGE_DB_PATH") or default_db_path()
     return SQLiteStorage(db_path=db_path)
