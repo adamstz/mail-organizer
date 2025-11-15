@@ -14,6 +14,8 @@ def test_get_messages_returns_json(monkeypatch):
 
     # Patch the storage.list_messages_dicts used by the API
     monkeypatch.setattr("src.storage.list_messages_dicts", lambda limit=50, offset=0: sample)
+    # Patch get_message_ids to return a count for the total
+    monkeypatch.setattr("src.storage.get_message_ids", lambda: ["m1", "m2"])
 
     # Import app after patching to ensure it picks up the monkeypatch if needed
     from src.api import app
@@ -22,4 +24,12 @@ def test_get_messages_returns_json(monkeypatch):
     r = client.get("/messages?limit=10")
     assert r.status_code == 200
     assert r.headers.get("content-type", "").startswith("application/json")
-    assert r.json() == sample
+    
+    # API now returns paginated format: {data: [...], total: N, limit: N, offset: N}
+    response = r.json()
+    assert "data" in response
+    assert "total" in response
+    assert response["data"] == sample
+    assert response["total"] == 2
+    assert response["limit"] == 10
+    assert response["offset"] == 0

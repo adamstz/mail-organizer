@@ -1,138 +1,109 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   List,
-  ListItem,
-  ListItemText,
-  IconButton,
-  Collapse,
   Paper,
   Typography,
   Box,
-  Chip,
+  CircularProgress,
+  Pagination,
 } from '@mui/material';
-import {
-  Delete as DeleteIcon,
-  ExpandMore as ExpandMoreIcon,
-  ExpandLess as ExpandLessIcon,
-} from '@mui/icons-material';
 import { Email } from '../types/email';
-
+import EmailItem from './EmailItem';
+import { parseBackendMessage } from '../utils/emailParser';
 import exampleEmails from '../test/exampleEmails';
-import { useEffect } from 'react';
 
-const getPriorityColor = (priority: Email['priority']): 'error' | 'warning' | 'success' | 'default' => {
-  switch (priority.toLowerCase()) {
-    case 'high':
-      return 'error';
-    case 'medium':
-      return 'warning';
-    case 'low':
-      return 'success';
-    default:
-      return 'default';
-  }
-};
+interface EmailListProps {
+  filter?: { type: 'priority' | 'label' | 'status' | null; value: string | null };
+  searchQuery?: string;
+  sortOrder?: 'recent' | 'oldest';
+}
 
-const EmailList: React.FC = () => {
+const EmailList: React.FC<EmailListProps> = ({ filter, searchQuery = '', sortOrder = 'recent' }) => {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [emails, setEmails] = useState<Email[]>(exampleEmails);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState<number>(1); // MUI Pagination is 1-indexed
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const pageSize = 50;
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch('/messages?limit=50');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const ct = res.headers.get('content-type') || '';
-        let data: unknown[] = [];
-        if (ct.includes('application/json')) {
-          data = await res.json();
-        } else {
-          // backend not available or returned HTML (e.g. index.html) — handle gracefully
-          const text = await res.text();
-          throw new Error('Unexpected response from server: ' + (text.slice(0, 200)));
-        }
-  // helper: extract best possible Date object from backend message dict
-        const parseMessageDate = (m: Record<string, unknown>): Date | null => {
-          // common fields from different serializers
-          const maybeNumber = m.internalDate ?? m.internal_date ?? m['internalDate'] ?? m['internal_date'];
-          if (maybeNumber) {
-            const n = Number(maybeNumber);
-            if (!Number.isNaN(n)) return new Date(n);
-          }
-
-          // fetched timestamps (ISO)
-          const maybeFetched = m.fetchedAt ?? m.fetched_at ?? m['fetchedAt'] ?? m['fetched_at'];
-          if (maybeFetched && (typeof maybeFetched === 'string' || typeof maybeFetched === 'number')) {
-            const d = new Date(maybeFetched);
-            if (!Number.isNaN(d.getTime())) return d;
-          }
-
-          // headers (Date header)
-          const headers = m.headers ?? m['headers'];
-          if (headers && typeof headers === 'object' && headers !== null) {
-            const headersObj = headers as Record<string, unknown>;
-            const headerDate = headersObj.Date ?? headersObj.date ?? headersObj['Date'] ?? headersObj['date'];
-            if (headerDate && (typeof headerDate === 'string' || typeof headerDate === 'number')) {
-              const d = new Date(headerDate);
-              if (!Number.isNaN(d.getTime())) return d;
+        const offset = (page - 1) * pageSize; // Convert 1-indexed page to 0-indexed offset
+        let url = `/messages?limit=${pageSize}&offset=${offset}`;
+        
+        // Use filter endpoints if filter is active
+        if (filter?.type && filter?.value) {
+          if (filter.type === 'priority') {
+            url = `/messages/filter/priority/${filter.value}?limit=${pageSize}&offset=${offset}`;
+          } else if (filter.type === 'label') {
+            url = `/messages/filter/label/${encodeURIComponent(filter.value)}?limit=${pageSize}&offset=${offset}`;
+          } else if (filter.type === 'status') {
+            if (filter.value === 'classified') {
+              url = `/messages/filter/classified?limit=${pageSize}&offset=${offset}`;
+            } else if (filter.value === 'unclassified') {
+              url = `/messages/filter/unclassified?limit=${pageSize}&offset=${offset}`;
             }
           }
-
-          return null;
-        };
-
-        const formatter = new Intl.DateTimeFormat(undefined, {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit',
-        });
-
-        // Decode HTML entities and strip invisible/control characters
-        const decodeHtml = (input: string): string => {
-          if (!input) return '';
-          try {
-            const txt = document.createElement('textarea');
-            txt.innerHTML = input;
-            return txt.value;
-          } catch {
-            return input;
+        }
+        
+        const res = await fetch(url);
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const ct = res.headers.get('content-type') || '';
+        
+        let data: unknown[] = [];
+        if (ct.includes('application/json')) {
+          const text = await res.text();
+          
+          const parsed = JSON.parse(text);
+            
+          // Handle new paginated response format: {data: [...], total: N}
+          if (parsed && typeof parsed === 'object' && 'data' in parsed && 'total' in parsed) {
+            data = parsed.data;
+            setTotalCount(parsed.total);
+          } else if (Array.isArray(parsed)) {
+            // Fallback for old format (direct array)
+            data = parsed;
+            setTotalCount(parsed.length);
           }
-        };
-
-        const sanitizeText = (input: string): string => {
-          if (!input) return '';
-          // decode HTML entities first (e.g. &#39; -> ')
-          let out = decodeHtml(input);
-          // remove invisible / format / control characters (zero-width spaces, BOM, etc.)
-          // Using Unicode property escape to remove all Other/format/control characters.
-          // eslint-disable-next-line no-misleading-character-class, no-control-regex
-          out = out.replace(/\p{C}/gu, '');
-          return out;
-        };
+        } else {
+          // backend not available or returned HTML (e.g. index.html) — handle gracefully
+          await res.text();
+          throw new Error('Unexpected response from server');
+        }
 
         // map backend message dict to Email type
-        const mapped: Email[] = (data as Record<string, unknown>[]).map((m: Record<string, unknown>, idx: number) => {
-          const d = parseMessageDate(m);
-          const displayDate = d ? formatter.format(d) : '';
-          const rawSubject = m.subject ?? m['subject'] ?? 'No subject';
-          const rawSummary = m.snippet ?? '';
-          const rawBody = m.payload ? JSON.stringify(m.payload) : (m.raw ? m.raw : '');
-
-          return {
-            id: idx + 1,
-            subject: sanitizeText(String(rawSubject)),
-            date: displayDate,
-            priority: 'Low',
-            summary: sanitizeText(String(rawSummary)),
-            body: sanitizeText(String(rawBody)),
-          };
-        });
-        setEmails(mapped);
+        const mapped: Email[] = [];
+        for (let idx = 0; idx < (data as Record<string, unknown>[]).length; idx++) {
+          const email = parseBackendMessage((data as Record<string, unknown>[])[idx], idx);
+          if (email) {
+            mapped.push(email);
+          }
+        }
+        
+        // Apply client-side search filter
+        let filtered = mapped;
+        if (searchQuery && searchQuery.trim().length > 0) {
+          const query = searchQuery.toLowerCase();
+          filtered = mapped.filter(email => 
+            email.subject.toLowerCase().includes(query) ||
+            email.summary.toLowerCase().includes(query) ||
+            email.body.toLowerCase().includes(query) ||
+            (email._raw?.from && String(email._raw.from).toLowerCase().includes(query)) ||
+            (email._raw?.to && String(email._raw.to).toLowerCase().includes(query)) ||
+            (email.classificationLabels && email.classificationLabels.some(l => l.toLowerCase().includes(query)))
+          );
+        }
+        
+        // Apply sort order
+        if (sortOrder === 'oldest') {
+          filtered = [...filtered].reverse();
+        }
+        
+        setEmails(filtered);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setEmails(exampleEmails);
@@ -141,7 +112,12 @@ const EmailList: React.FC = () => {
       }
     }
     load();
-  }, []);
+  }, [filter, searchQuery, sortOrder, page]);
+
+  // Reset to page 1 when filter or search changes
+  useEffect(() => {
+    setPage(1);
+  }, [filter, searchQuery]);
 
   const handleExpand = (id: number): void => {
     setExpandedId(expandedId === id ? null : id);
@@ -165,99 +141,65 @@ const EmailList: React.FC = () => {
         flexDirection: 'column'
       }}
     >
-      {/* show small status line for loading/error (keeps variables used for TS) */}
-      <Box sx={{ mb: 1 }}>
-        {loading && (
-          <Typography variant="caption" color="text.secondary">Loading messages…</Typography>
-        )}
-        {error && (
-          <Typography variant="caption" color="error">{error}</Typography>
-        )}
-      </Box>
+      {/* Loading state with spinner */}
+      {loading && (
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            flexDirection: 'column',
+            alignItems: 'center', 
+            justifyContent: 'center',
+            minHeight: '200px',
+            gap: 2
+          }}
+        >
+          <CircularProgress size={48} />
+          <Typography variant="body1" color="text.secondary">
+            Loading messages…
+          </Typography>
+        </Box>
+      )}
 
-      <List sx={{ 
+      {/* Error state */}
+      {error && !loading && (
+        <Box sx={{ mb: 2, p: 2, bgcolor: 'error.light', borderRadius: 1 }}>
+          <Typography variant="body2" color="error.dark">
+            {error}
+          </Typography>
+        </Box>
+      )}
+
+      {/* Email list */}
+      {!loading && (
+        <List sx={{ 
         width: '100%',
         mx: 'auto',
         minWidth: '100%'
       }}>
         {emails.map((email) => (
-          <React.Fragment key={email.id}>
-            <ListItem
-              alignItems="flex-start"
-              sx={{
-                cursor: 'pointer',
-                '&:hover': { backgroundColor: 'action.hover' },
-                borderBottom: '1px solid',
-                borderColor: 'divider',
-                bgcolor: 'background.paper',
-                mb: 2,
-                borderRadius: 1,
-                p: 2,
-                boxShadow: 1,
-              }}
-            >
-              <Box sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    width: '100%',
-                  }}
-                  onClick={() => handleExpand(email.id)}
-                >
-                  <ListItemText
-                    primary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Typography variant="subtitle1">{email.subject}</Typography>
-                        <Chip
-                          label={email.priority}
-                          size="small"
-                          color={getPriorityColor(email.priority)}
-                        />
-                      </Box>
-                    }
-                    secondary={
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ mt: 1 }}
-                      >
-                        {email.summary}
-                      </Typography>
-                    }
-                  />
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      {email.date}
-                    </Typography>
-                    {expandedId === email.id ? (
-                      <ExpandLessIcon />
-                    ) : (
-                      <ExpandMoreIcon />
-                    )}
-                  </Box>
-                </Box>
-              </Box>
-              <IconButton
-                edge="end"
-                aria-label="delete"
-                onClick={() => handleDelete(email.id)}
-                sx={{ ml: 2 }}
-              >
-                <DeleteIcon />
-              </IconButton>
-            </ListItem>
-            <Collapse in={expandedId === email.id} timeout="auto" unmountOnExit>
-              <Box sx={{ p: 3, backgroundColor: 'grey.50' }}>
-                <Typography variant="body1" whiteSpace="pre-line">
-                  {email.body}
-                </Typography>
-              </Box>
-            </Collapse>
-          </React.Fragment>
+          <EmailItem
+            key={email.id}
+            email={email}
+            isExpanded={expandedId === email.id}
+            onExpand={handleExpand}
+            onDelete={handleDelete}
+          />
         ))}
       </List>
+      )}
+      
+      {!loading && totalCount > pageSize && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+          <Pagination 
+            count={Math.ceil(totalCount / pageSize)} 
+            page={page} 
+            onChange={(_, value) => setPage(value)}
+            color="primary"
+            showFirstButton
+            showLastButton
+          />
+        </Box>
+      )}
     </Paper>
   );
 };

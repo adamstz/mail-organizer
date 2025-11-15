@@ -64,3 +64,36 @@ class StorageBackend:
     def list_classification_records_for_message(self, message_id: str):
         """Return a list of classification records for the given message id."""
         raise NotImplementedError()
+
+    def get_label_counts(self) -> dict:
+        """Get all unique classification labels with their counts."""
+        raise NotImplementedError()
+    
+    # Optimized filtering methods (PostgreSQL only for now)
+    def list_messages_by_label(self, label: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by classification label with database-level filtering.
+        
+        Returns tuple of (messages, total_count).
+        """
+        raise NotImplementedError()
+    
+    def list_messages_by_priority(self, priority: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by priority with database-level filtering.
+        
+        Returns tuple of (messages, total_count).
+        """
+        raise NotImplementedError()
+    
+    def list_classified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only classified messages with database-level filtering.
+        
+        Returns tuple of (messages, total_count).
+        """
+        raise NotImplementedError()
+    
+    def list_unclassified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only unclassified messages with database-level filtering.
+        
+        Returns tuple of (messages, total_count).
+        """
+        raise NotImplementedError()

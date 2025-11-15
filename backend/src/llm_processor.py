@@ -232,8 +232,10 @@ Subject: {subject}
 Body: {body_truncated}
 
 Instructions:
-- Choose the most relevant category labels from: finance, banking, investments, security, authentication, meetings, appointments, personal, work, career, job, job-application, job-applied, job-pending, job-interview, job-rejected, job-offer, job-followup, shopping, ecommerce, social, entertainment, news, newsletters, promotions, marketing, spam, travel, health, education, legal, taxes, receipts, notifications, updates, alerts, support, bills, insurance
-- Job labels guide: use 'job-application' for any job-related email, then add specific status like 'job-applied' (confirmation you applied), 'job-pending' (awaiting response), 'job-interview' (interview scheduled), 'job-rejected' (rejection), 'job-offer' (offer received), 'job-followup' (follow-up communications)
+- You MUST ONLY choose labels from this exact list (do not create new labels):
+  finance, banking, investments, security, authentication, meetings, appointments, personal, work, career, jobs, shopping, social, entertainment, news, newsletters, promotions, marketing, spam, travel, health, education, legal, taxes, receipts, notifications, updates, alerts, support, bills, insurance
+- For job-related emails, use ONLY the label "jobs" (not job-application, job-applied, etc.)
+- Choose 1-3 most relevant labels
 - Assign priority: "high" (urgent/important), "normal" (routine), or "low" (can wait)
 - Write a brief summary (1-2 sentences) of the email's main purpose
 - Return ONLY a JSON object in this exact format:
@@ -241,6 +243,16 @@ Instructions:
 {{"labels": ["category1", "category2"], "priority": "normal", "summary": "Brief description of the email"}}
 
 Do not include explanations or markdown. Only output valid JSON."""
+
+    # Allowed label whitelist
+    ALLOWED_LABELS = {
+        "finance", "banking", "investments", "security", "authentication",
+        "meetings", "appointments", "personal", "work", "career", "jobs",
+        "shopping", "social", "entertainment", "news", "newsletters",
+        "promotions", "marketing", "spam", "travel", "health", "education",
+        "legal", "taxes", "receipts", "notifications", "updates", "alerts",
+        "support", "bills", "insurance"
+    }
 
     def _parse_llm_response(self, content: str) -> Dict:
         """Parse LLM response, handling common formatting issues."""
@@ -270,7 +282,16 @@ Do not include explanations or markdown. Only output valid JSON."""
             # Convert single string to list
             result["labels"] = [result["labels"]] if result["labels"] else []
         
-        # 3. Ensure priority exists and is valid
+        # 3. Filter labels to only allowed ones (normalize to lowercase)
+        if result.get("labels"):
+            normalized_labels = []
+            for label in result["labels"]:
+                label_lower = str(label).lower().strip()
+                if label_lower in self.ALLOWED_LABELS:
+                    normalized_labels.append(label_lower)
+            result["labels"] = normalized_labels
+        
+        # 4. Ensure priority exists and is valid
         if "priority" not in result:
             result["priority"] = "normal"
         
@@ -280,7 +301,7 @@ Do not include explanations or markdown. Only output valid JSON."""
             if result["priority"] not in ("high", "normal", "low"):
                 result["priority"] = "normal"
         
-        # 4. Ensure summary exists
+        # 5. Ensure summary exists
         if "summary" not in result:
             result["summary"] = ""
         

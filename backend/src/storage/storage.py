@@ -163,3 +163,40 @@ def get_history_id() -> Optional[str]:
 
 def set_history_id(history_id: str) -> None:
     get_storage_backend().set_history_id(history_id)
+
+
+def get_label_counts() -> dict:
+    """Get all unique classification labels with their counts."""
+    return get_storage_backend().get_label_counts()
+
+
+def list_messages_by_label(label: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+    """List messages filtered by classification label with database-level filtering.
+    
+    Returns tuple of (messages, total_count).
+    """
+    return get_storage_backend().list_messages_by_label(label, limit=limit, offset=offset)
+
+
+def list_messages_by_priority(priority: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+    """List messages filtered by priority with database-level filtering.
+    
+    Returns tuple of (messages, total_count).
+    """
+    return get_storage_backend().list_messages_by_priority(priority, limit=limit, offset=offset)
+
+
+def list_classified_messages(limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+    """List only classified messages with database-level filtering.
+    
+    Returns tuple of (messages, total_count).
+    """
+    return get_storage_backend().list_classified_messages(limit=limit, offset=offset)
+
+
+def list_unclassified_messages(limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+    """List only unclassified messages with database-level filtering.
+    
+    Returns tuple of (messages, total_count).
+    """
+    return get_storage_backend().list_unclassified_messages(limit=limit, offset=offset)

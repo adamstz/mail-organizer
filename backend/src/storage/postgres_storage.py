@@ -56,10 +56,7 @@ class PostgresStorage(StorageBackend):
                 headers JSONB,
                 fetched_at TIMESTAMP WITH TIME ZONE,
                 has_attachments BOOLEAN DEFAULT FALSE,
-                latest_classification_id TEXT,
-                classification_labels JSONB,
-                priority TEXT,
-                summary TEXT
+                latest_classification_id TEXT
             )
             """
         )
@@ -110,7 +107,31 @@ class PostgresStorage(StorageBackend):
             """
         )
         
-        # Add foreign key constraint if not exists (PostgreSQL handles this gracefully)
+        # Create GIN index on labels JSONB column for fast label queries
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_classifications_labels_gin 
+            ON classifications USING GIN (labels jsonb_path_ops)
+            """
+        )
+        
+        # Create index on classifications.priority for priority filtering
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_classifications_priority 
+            ON classifications(priority) WHERE priority IS NOT NULL
+            """
+        )
+        
+        # Create index on messages.latest_classification_id for faster joins
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_messages_latest_classification 
+            ON messages(latest_classification_id) WHERE latest_classification_id IS NOT NULL
+            """
+        )
+        
+        # Add foreign key constraint if not exists
         try:
             cur.execute(
                 """
@@ -119,12 +140,16 @@ class PostgresStorage(StorageBackend):
                 FOREIGN KEY(latest_classification_id) REFERENCES classifications(id)
                 """
             )
-        except psycopg2.errors.DuplicateObject:
-            conn.rollback()
-        else:
             conn.commit()
+        except psycopg2.errors.DuplicateObject:
+            # Constraint already exists, this is fine
+            conn.rollback()
+        except Exception as e:
+            # Log other errors but don't fail initialization
+            import sys
+            print(f"Warning: Could not add foreign key constraint: {e}", file=sys.stderr)
+            conn.rollback()
         
-        conn.commit()
         cur.close()
         conn.close()
 
@@ -137,9 +162,8 @@ class PostgresStorage(StorageBackend):
             """
             INSERT INTO messages
             (id, thread_id, from_addr, to_addr, subject, snippet, labels, 
-             internal_date, payload, raw, headers, fetched_at, classification_labels, 
-             priority, summary, has_attachments)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             internal_date, payload, raw, headers, fetched_at, has_attachments)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 thread_id = EXCLUDED.thread_id,
                 from_addr = EXCLUDED.from_addr,
@@ -152,9 +176,6 @@ class PostgresStorage(StorageBackend):
                 raw = EXCLUDED.raw,
                 headers = EXCLUDED.headers,
                 fetched_at = EXCLUDED.fetched_at,
-                classification_labels = EXCLUDED.classification_labels,
-                priority = EXCLUDED.priority,
-                summary = EXCLUDED.summary,
                 has_attachments = EXCLUDED.has_attachments
             """,
             (
@@ -170,9 +191,6 @@ class PostgresStorage(StorageBackend):
                 msg.raw,
                 Json(msg.headers) if msg.headers is not None else None,
                 datetime.now(timezone.utc),
-                Json(msg.classification_labels) if msg.classification_labels is not None else None,
-                msg.priority,
-                msg.summary,
                 msg.has_attachments,
             ),
         )
@@ -413,7 +431,7 @@ class PostgresStorage(StorageBackend):
             SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
             FROM messages m
             LEFT JOIN classifications c ON m.latest_classification_id = c.id
-            ORDER BY m.fetched_at DESC 
+            ORDER BY m.internal_date DESC 
             LIMIT %s OFFSET %s
             """,
             (limit, offset)
@@ -472,3 +490,289 @@ class PostgresStorage(StorageBackend):
         conn.commit()
         cur.close()
         conn.close()
+
+    def get_label_counts(self) -> dict:
+        """Get all unique classification labels with their counts efficiently."""
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        try:
+            # Native JSONB query - fast with GIN index
+            cur.execute(
+                """
+                SELECT 
+                    jsonb_array_elements_text(labels) as label,
+                    COUNT(*) as count
+                FROM classifications
+                WHERE labels IS NOT NULL 
+                GROUP BY label
+                ORDER BY count DESC
+                """
+            )
+            rows = cur.fetchall()
+            result = {row[0]: row[1] for row in rows}
+            cur.close()
+            conn.close()
+            return result
+        except Exception as e:
+            # Fallback: fetch labels column only and count in Python
+            try:
+                cur.close()
+                conn.close()
+            except:
+                pass
+            
+            conn = self.connect()
+            cur = conn.cursor()
+            cur.execute("SELECT labels FROM classifications WHERE labels IS NOT NULL")
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            label_counts = {}
+            for (labels,) in rows:
+                try:
+                    # labels is now jsonb, psycopg2 auto-converts to list
+                    if isinstance(labels, list):
+                        for label in labels:
+                            label_counts[label] = label_counts.get(label, 0) + 1
+                except:
+                    pass
+            return label_counts
+
+    def list_messages_by_label(self, label: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by classification label (database-level filtering).
+        
+        Returns a tuple of (messages, total_count).
+        Uses GIN index on classifications.labels for fast filtering.
+        """
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Use JSONB containment operator @> with GIN index on classifications table
+        cur.execute(
+            """
+            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE c.labels @> %s::jsonb
+            ORDER BY m.internal_date DESC 
+            LIMIT %s OFFSET %s
+            """,
+            (json.dumps([label]), limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count for this label
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE c.labels @> %s::jsonb
+            """,
+            (json.dumps([label]),)
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=r['labels'],
+                    internal_date=r['internal_date'],
+                    payload=r['payload'],
+                    raw=r['raw'],
+                    headers=r['headers'] or {},
+                    classification_labels=r['class_labels'],
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                    has_attachments=r['has_attachments'] or False,
+                )
+            )
+        return messages, total
+
+    def list_messages_by_priority(self, priority: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by priority (database-level filtering).
+        
+        Returns a tuple of (messages, total_count).
+        Uses index on classifications.priority for fast filtering.
+        """
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute(
+            """
+            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE LOWER(c.priority) = LOWER(%s)
+            ORDER BY m.internal_date DESC 
+            LIMIT %s OFFSET %s
+            """,
+            (priority, limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count for this priority
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE LOWER(c.priority) = LOWER(%s)
+            """,
+            (priority,)
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=r['labels'],
+                    internal_date=r['internal_date'],
+                    payload=r['payload'],
+                    raw=r['raw'],
+                    headers=r['headers'] or {},
+                    classification_labels=r['class_labels'],
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                    has_attachments=r['has_attachments'] or False,
+                )
+            )
+        return messages, total
+
+    def list_classified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only classified messages (database-level filtering).
+        
+        Returns a tuple of (messages, total_count).
+        A message is classified if it has a latest_classification_id.
+        """
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute(
+            """
+            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.latest_classification_id IS NOT NULL
+            ORDER BY m.internal_date DESC 
+            LIMIT %s OFFSET %s
+            """,
+            (limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages 
+            WHERE latest_classification_id IS NOT NULL
+            """
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=r['labels'],
+                    internal_date=r['internal_date'],
+                    payload=r['payload'],
+                    raw=r['raw'],
+                    headers=r['headers'] or {},
+                    classification_labels=r['class_labels'],
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                    has_attachments=r['has_attachments'] or False,
+                )
+            )
+        return messages, total
+
+    def list_unclassified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only unclassified messages (database-level filtering).
+        
+        Returns a tuple of (messages, total_count).
+        A message is unclassified if it has no latest_classification_id.
+        """
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute(
+            """
+            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.latest_classification_id IS NULL
+            ORDER BY m.internal_date DESC 
+            LIMIT %s OFFSET %s
+            """,
+            (limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages 
+            WHERE latest_classification_id IS NULL
+            """
+        )
+        total = cur.fetchone()["count"]
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=r['labels'],
+                    internal_date=r['internal_date'],
+                    payload=r['payload'],
+                    raw=r['raw'],
+                    headers=r['headers'] or {},
+                    classification_labels=r['class_labels'],
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                    has_attachments=r['has_attachments'] or False,
+                )
+            )
+        return messages, total

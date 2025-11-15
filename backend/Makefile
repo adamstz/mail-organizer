@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint format clean classify classify-force pull-inbox
+.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint format clean classify classify-force pull-inbox run
 
 # Python virtual environment
 VENV_PATH = ../.venv
@@ -20,6 +20,9 @@ help:
 	@echo "  make lint           - Run flake8 linter"
 	@echo "  make format         - Format code with black"
 	@echo "  make clean          - Remove cache and temp files"
+	@echo ""
+	@echo "Server commands:"
+	@echo "  make run            - Run the FastAPI server (uvicorn)"
 	@echo ""
 	@echo "Classification commands:"
 	@echo "  make classify       - Classify all unclassified messages"
@@ -118,3 +121,7 @@ classify-force:
 # Pull all messages from Gmail INBOX
 pull-inbox:
 	$(PYTHON) -m src.jobs.pull_all_inbox --save-history
+
+# Run the FastAPI server
+run:
+	$(PYTHON) -m uvicorn src.api:app --reload --host 0.0.0.0 --port 8000

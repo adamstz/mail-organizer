@@ -129,8 +129,8 @@ class SQLiteStorage(StorageBackend):
         cur.execute(
             """
             INSERT OR REPLACE INTO messages
-            (id, thread_id, from_addr, to_addr, subject, snippet, labels, internal_date, payload, raw, headers, fetched_at, classification_labels, priority, summary, has_attachments)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, thread_id, from_addr, to_addr, subject, snippet, labels, internal_date, payload, raw, headers, fetched_at, has_attachments)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 msg.id,
@@ -145,9 +145,6 @@ class SQLiteStorage(StorageBackend):
                 msg.raw,
                 self._serialize(msg.headers) if msg.headers is not None else None,
                 datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                self._serialize(msg.classification_labels) if msg.classification_labels is not None else None,
-                msg.priority,
-                msg.summary,
                 1 if msg.has_attachments else 0,
             ),
         )
@@ -302,7 +299,9 @@ class SQLiteStorage(StorageBackend):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet, 
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
             FROM messages m
             LEFT JOIN classifications c ON m.latest_classification_id = c.id
             WHERE m.id = ?
@@ -315,33 +314,23 @@ class SQLiteStorage(StorageBackend):
         if not row:
             return None
         
-        # Parse row data - classification from JOIN comes last
-        labels = self._deserialize(row[6])
-        payload = self._deserialize(row[8])
-        headers = self._deserialize(row[10]) or {}
-        has_attachments = bool(row[11]) if len(row) > 11 and row[11] is not None else False
-        
-        # Classification data from the JOIN (last 3 columns)
-        classification_labels = self._deserialize(row[-3]) if row[-3] else None
-        priority = row[-2]
-        summary = row[-1]
-        
+        # Use row_factory=Row to access by column name
         return MailMessage(
-            id=row[0],
-            thread_id=row[1],
-            from_=row[2],
-            to=row[3],
-            subject=row[4],
-            snippet=row[5],
-            labels=labels,
-            internal_date=row[7],
-            payload=payload,
-            raw=row[9],
-            headers=headers,
-            classification_labels=classification_labels,
-            priority=priority,
-            summary=summary,
-            has_attachments=has_attachments,
+            id=row['id'],
+            thread_id=row['thread_id'],
+            from_=row['from_addr'],
+            to=row['to_addr'],
+            subject=row['subject'],
+            snippet=row['snippet'],
+            labels=self._deserialize(row['labels']),
+            internal_date=row['internal_date'],
+            payload=self._deserialize(row['payload']),
+            raw=row['raw'],
+            headers=self._deserialize(row['headers']) or {},
+            has_attachments=bool(row['has_attachments']) if row['has_attachments'] is not None else False,
+            classification_labels=self._deserialize(row['class_labels']) if row['class_labels'] else None,
+            priority=row['class_priority'],
+            summary=row['class_summary'],
         )
     
     def get_unclassified_message_ids(self) -> List[str]:
@@ -374,10 +363,12 @@ class SQLiteStorage(StorageBackend):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT m.*, c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet, 
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
             FROM messages m
             LEFT JOIN classifications c ON m.latest_classification_id = c.id
-            ORDER BY m.fetched_at DESC 
+            ORDER BY m.internal_date DESC 
             LIMIT ? OFFSET ?
             """,
             (limit, offset)
@@ -386,33 +377,23 @@ class SQLiteStorage(StorageBackend):
         conn.close()
         out: List[MailMessage] = []
         for r in rows:
-            labels = self._deserialize(r[6])
-            payload = self._deserialize(r[8])
-            headers = self._deserialize(r[10]) or {}
-            has_attachments = bool(r[11]) if len(r) > 11 and r[11] is not None else False
-            
-            # Classification data from the JOIN (last 3 columns)
-            classification_labels = self._deserialize(r[-3]) if r[-3] else None
-            priority = r[-2]
-            summary = r[-1]
-            
             out.append(
                 MailMessage(
-                    id=r[0],
-                    thread_id=r[1],
-                    from_=r[2],
-                    to=r[3],
-                    subject=r[4],
-                    snippet=r[5],
-                    labels=labels,
-                    internal_date=r[7],
-                    payload=payload,
-                    raw=r[9],
-                    headers=headers,
-                    classification_labels=classification_labels,
-                    priority=priority,
-                    summary=summary,
-                    has_attachments=has_attachments,
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=self._deserialize(r['labels']),
+                    internal_date=r['internal_date'],
+                    payload=self._deserialize(r['payload']),
+                    raw=r['raw'],
+                    headers=self._deserialize(r['headers']) or {},
+                    has_attachments=bool(r['has_attachments']) if r['has_attachments'] is not None else False,
+                    classification_labels=self._deserialize(r['class_labels']) if r['class_labels'] else None,
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
                 )
             )
         return out
@@ -433,3 +414,301 @@ class SQLiteStorage(StorageBackend):
         cur.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ("historyId", history_id))
         conn.commit()
         conn.close()
+
+    def get_label_counts(self) -> dict:
+        """Get all unique classification labels with their counts efficiently."""
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        try:
+            # Use json_each to efficiently extract and count labels
+            cur.execute(
+                """
+                SELECT json_each.value as label, COUNT(*) as count
+                FROM classifications, json_each(classifications.labels)
+                WHERE classifications.labels IS NOT NULL
+                GROUP BY label
+                ORDER BY count DESC
+                """
+            )
+            rows = cur.fetchall()
+            result = {row[0]: row[1] for row in rows}
+            cur.close()
+            conn.close()
+            return result
+        except sqlite3.OperationalError:
+            # Fallback: fetch labels column only and count in Python
+            try:
+                cur.close()
+                conn.close()
+            except:
+                pass
+            
+            conn = self.connect()
+            cur = conn.cursor()
+            cur.execute("SELECT labels FROM classifications WHERE labels IS NOT NULL")
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            label_counts = {}
+            for (labels_str,) in rows:
+                try:
+                    labels = self._deserialize(labels_str)
+                    if isinstance(labels, list):
+                        for label in labels:
+                            label_counts[label] = label_counts.get(label, 0) + 1
+                except:
+                    pass
+            return label_counts
+
+    def list_messages_by_label(self, label: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by classification label.
+        
+        Returns a tuple of (messages, total_count).
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        # Get messages with the specified label
+        cur.execute(
+            """
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet, 
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE c.labels LIKE ?
+            ORDER BY m.internal_date DESC 
+            LIMIT ? OFFSET ?
+            """,
+            (f'%"{label}"%', limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count for this label
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE c.labels LIKE ?
+            """,
+            (f'%"{label}"%',)
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            classification_labels = self._deserialize(r['class_labels']) if r['class_labels'] else None
+            
+            # Filter in Python to ensure exact label match
+            if classification_labels and label in classification_labels:
+                messages.append(
+                    MailMessage(
+                        id=r['id'],
+                        thread_id=r['thread_id'],
+                        from_=r['from_addr'],
+                        to=r['to_addr'],
+                        subject=r['subject'],
+                        snippet=r['snippet'],
+                        labels=self._deserialize(r['labels']),
+                        internal_date=r['internal_date'],
+                        payload=self._deserialize(r['payload']),
+                        raw=r['raw'],
+                        headers=self._deserialize(r['headers']) or {},
+                        has_attachments=bool(r['has_attachments']) if r['has_attachments'] is not None else False,
+                        classification_labels=classification_labels,
+                        priority=r['class_priority'],
+                        summary=r['class_summary'],
+                    )
+                )
+        
+        return messages, total
+
+    def list_messages_by_priority(self, priority: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by priority.
+        
+        Returns a tuple of (messages, total_count).
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        cur.execute(
+            """
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet, 
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE LOWER(c.priority) = LOWER(?)
+            ORDER BY m.internal_date DESC 
+            LIMIT ? OFFSET ?
+            """,
+            (priority, limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count for this priority
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE LOWER(c.priority) = LOWER(?)
+            """,
+            (priority,)
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=self._deserialize(r['labels']),
+                    internal_date=r['internal_date'],
+                    payload=self._deserialize(r['payload']),
+                    raw=r['raw'],
+                    headers=self._deserialize(r['headers']) or {},
+                    has_attachments=bool(r['has_attachments']) if r['has_attachments'] is not None else False,
+                    classification_labels=self._deserialize(r['class_labels']) if r['class_labels'] else None,
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                )
+            )
+        
+        return messages, total
+
+    def list_classified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only classified messages.
+        
+        Returns a tuple of (messages, total_count).
+        A message is classified if it has a latest_classification_id.
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        cur.execute(
+            """
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet, 
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            INNER JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.latest_classification_id IS NOT NULL
+            ORDER BY m.internal_date DESC 
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages 
+            WHERE latest_classification_id IS NOT NULL
+            """
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=self._deserialize(r['labels']),
+                    internal_date=r['internal_date'],
+                    payload=self._deserialize(r['payload']),
+                    raw=r['raw'],
+                    headers=self._deserialize(r['headers']) or {},
+                    has_attachments=bool(r['has_attachments']) if r['has_attachments'] is not None else False,
+                    classification_labels=self._deserialize(r['class_labels']) if r['class_labels'] else None,
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                )
+            )
+        
+        return messages, total
+
+    def list_unclassified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only unclassified messages.
+        
+        Returns a tuple of (messages, total_count).
+        A message is unclassified if it has no latest_classification_id.
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+        
+        cur.execute(
+            """
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet, 
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.latest_classification_id IS NULL
+            ORDER BY m.internal_date DESC 
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset)
+        )
+        rows = cur.fetchall()
+        
+        # Get total count
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages 
+            WHERE latest_classification_id IS NULL
+            """
+        )
+        total = cur.fetchone()['count']
+        
+        cur.close()
+        conn.close()
+        
+        messages = []
+        for r in rows:
+            messages.append(
+                MailMessage(
+                    id=r['id'],
+                    thread_id=r['thread_id'],
+                    from_=r['from_addr'],
+                    to=r['to_addr'],
+                    subject=r['subject'],
+                    snippet=r['snippet'],
+                    labels=self._deserialize(r['labels']),
+                    internal_date=r['internal_date'],
+                    payload=self._deserialize(r['payload']),
+                    raw=r['raw'],
+                    headers=self._deserialize(r['headers']) or {},
+                    has_attachments=bool(r['has_attachments']) if r['has_attachments'] is not None else False,
+                    classification_labels=self._deserialize(r['class_labels']) if r['class_labels'] else None,
+                    priority=r['class_priority'],
+                    summary=r['class_summary'],
+                )
+            )
+        
+        return messages, total

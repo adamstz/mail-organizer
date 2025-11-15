@@ -112,3 +112,78 @@ class InMemoryStorage(StorageBackend):
         for d in data:
             out.append(ClassificationRecord.from_dict(d))
         return out
+
+    def get_label_counts(self) -> dict:
+        """Get all unique classification labels with their counts."""
+        label_counts = {}
+        for msg in self._messages.values():
+            if msg.classification_labels:
+                for label in msg.classification_labels:
+                    label_counts[label] = label_counts.get(label, 0) + 1
+        return label_counts
+    
+    def list_messages_by_label(self, label: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by classification label.
+        
+        Returns a tuple of (messages, total_count).
+        """
+        # Filter messages by label
+        filtered = [
+            msg for msg in self._messages.values()
+            if msg.classification_labels and label in msg.classification_labels
+        ]
+        total = len(filtered)
+        
+        # Apply pagination
+        paginated = filtered[offset:offset + limit]
+        return paginated, total
+    
+    def list_messages_by_priority(self, priority: str, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List messages filtered by priority.
+        
+        Returns a tuple of (messages, total_count).
+        """
+        # Filter messages by priority (case-insensitive)
+        filtered = [
+            msg for msg in self._messages.values()
+            if msg.priority and msg.priority.lower() == priority.lower()
+        ]
+        total = len(filtered)
+        
+        # Apply pagination
+        paginated = filtered[offset:offset + limit]
+        return paginated, total
+    
+    def list_classified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only classified messages.
+        
+        Returns a tuple of (messages, total_count).
+        A message is classified if it has a latest_classification_id.
+        """
+        # Filter messages that are classified
+        filtered = [
+            msg for msg in self._messages.values()
+            if msg.id in self._latest_classification
+        ]
+        total = len(filtered)
+        
+        # Apply pagination
+        paginated = filtered[offset:offset + limit]
+        return paginated, total
+    
+    def list_unclassified_messages(self, limit: int = 100, offset: int = 0) -> tuple[List[MailMessage], int]:
+        """List only unclassified messages.
+        
+        Returns a tuple of (messages, total_count).
+        A message is unclassified if it has no latest_classification_id.
+        """
+        # Filter messages that are not classified
+        filtered = [
+            msg for msg in self._messages.values()
+            if msg.id not in self._latest_classification
+        ]
+        total = len(filtered)
+        
+        # Apply pagination
+        paginated = filtered[offset:offset + limit]
+        return paginated, total
