@@ -1,16 +1,144 @@
-# React + Vite
+# Organize Mail - Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript frontend for the Organize Mail application. Provides an intuitive interface for managing classified emails, chatting with your email history via RAG, and monitoring system activity in real-time.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Email Management**: Browse, filter, and search classified emails with pagination
+- **Smart Filtering**: Filter by label (Finance, Security, Meetings, etc.), priority, and custom search queries
+- **RAG-Powered Chat**: Conversational interface to ask questions about your email history
+- **Real-Time Logging**: WebSocket-based log viewer with filtering, pause/resume, and export
+- **Reclassification**: Manually trigger reclassification for individual emails
+- **LLM Model Selection**: Choose from available models (OpenAI, Anthropic, Ollama)
+- **Ollama Integration**: Automatically detect and start local Ollama service when needed
+- **Responsive UI**: Material-UI components with dark theme and resizable panels
 
-## React Compiler
+<!-- TODO: Add screenshots here -->
+![Email List View](docs/images/email-list.png)
+*Email list with filtering and classification labels*
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+![Chat Interface](docs/images/chat-interface.png)
+*RAG-powered chat interface for querying email history*
 
-## Expanding the ESLint configuration
+![Log Viewer](docs/images/log-viewer.png)
+*Real-time log viewer with WebSocket streaming*
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Architecture
+
+```
+frontend/
+├── src/
+│   ├── components/
+│   │   ├── EmailList.tsx         # Main email list with pagination
+│   │   ├── EmailItem.tsx         # Individual email display
+│   │   ├── EmailToolbar.tsx      # Filters, search, model selection
+│   │   ├── ChatInterface.tsx     # RAG chat UI
+│   │   ├── LogViewer.tsx         # Real-time log streaming
+│   │   └── Stats.tsx             # Classification statistics
+│   ├── utils/
+│   │   └── logger.ts             # Frontend logging utility
+│   ├── types/
+│   │   └── index.ts              # TypeScript type definitions
+│   ├── App.tsx                   # Root component with layout
+│   └── main.tsx                  # Application entry point
+├── vite.config.ts                # Vite configuration with proxies
+└── public/                       # Static assets
+```
+
+## Quick Start
+
+1. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+2. **Start development server**
+   ```bash
+   npm run dev
+   ```
+
+3. **Build for production**
+   ```bash
+   npm run build
+   ```
+
+4. **Run tests**
+   ```bash
+   npm test
+   ```
+
+## Development
+
+The frontend uses Vite for fast development with HMR (Hot Module Replacement) and proxies API requests to the backend:
+
+- `/api/*` → `http://localhost:8000` (REST API)
+- `/ws/*` → `ws://localhost:8000` (WebSocket for logs)
+
+### Key Components
+
+- **EmailList**: Displays paginated emails with filtering and sorting
+- **EmailToolbar**: Provides filters (label, priority), search, and model selection
+- **EmailItem**: Shows individual email with metadata, classification, and reclassify button
+- **ChatInterface**: RAG chat with query input, streaming responses, and source citations
+- **LogViewer**: Real-time log viewer with WebSocket connection, filtering, and controls
+- **Stats**: Dashboard showing classification statistics by label and priority
+
+### Logging
+
+The frontend includes a comprehensive logging system:
+- All user actions (filters, searches, reclassifications) are logged
+- Logs are sent to backend via `/api/frontend-log` endpoint
+- Real-time logs viewable in LogViewer component via WebSocket
+
+## Technology Stack
+
+- **React 18** - UI framework
+- **TypeScript** - Type safety
+- **Vite** - Build tool and dev server
+- **Material-UI (MUI)** - Component library
+- **WebSocket API** - Real-time log streaming
+
+## Configuration
+
+### Vite Proxy
+
+The `vite.config.ts` configures proxies for backend communication:
+
+```typescript
+proxy: {
+  '/api': 'http://localhost:8000',
+  '/ws': {
+    target: 'ws://localhost:8000',
+    ws: true
+  }
+}
+```
+
+### Environment Variables
+
+Create a `.env.local` file for environment-specific configuration:
+
+```bash
+VITE_API_URL=http://localhost:8000  # Optional: override API URL
+```
+
+## Production Deployment
+
+For production, the Vite proxy is not used. Configure your reverse proxy (nginx, Caddy, etc.) to route:
+- `/api/*` → Backend API server
+- `/ws/*` → Backend WebSocket server (with upgrade headers)
+
+Example nginx configuration:
+
+```nginx
+location /api/ {
+    proxy_pass http://backend:8000;
+}
+
+location /ws/ {
+    proxy_pass http://backend:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
