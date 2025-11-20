@@ -6,6 +6,7 @@ import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import EmailList from './components/EmailList';
 import EmailToolbar from './components/EmailToolbar';
+import SyncStatus from './components/SyncStatus';
 import ChatInterface from './components/ChatInterface';
 import LogViewer from './components/LogViewer';
 import { logger } from './utils/logger';
@@ -36,6 +37,7 @@ const App: React.FC = () => {
   const [isLogsVisible, setIsLogsVisible] = useState(false);
   const [chatWidth, setChatWidth] = useState(41.67); // Default ~5/12 columns in percentage
   const [isDragging, setIsDragging] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -121,6 +123,12 @@ const App: React.FC = () => {
     logger.info('Organize Mail application started');
   }, []);
 
+  // Handler to refresh email list after sync
+  const handleSyncRefresh = () => {
+    setRefreshKey(prev => prev + 1);
+    logger.info('Email list refreshed after sync operation');
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -172,6 +180,8 @@ const App: React.FC = () => {
           transition: isDragging ? 'none' : 'width 0.2s ease'
         }}>
           <Box sx={{ p: 2, flexGrow: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+            <SyncStatus onRefresh={handleSyncRefresh} />
+            
             <EmailToolbar
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
@@ -186,7 +196,13 @@ const App: React.FC = () => {
               onModelChange={setSelectedModel}
             />
 
-            <EmailList filters={filters} searchQuery={searchQuery} sortOrder={sortOrder} selectedModel={selectedModel} />
+            <EmailList 
+              key={refreshKey}
+              filters={filters} 
+              searchQuery={searchQuery} 
+              sortOrder={sortOrder} 
+              selectedModel={selectedModel} 
+            />
           </Box>
         </Box>
 

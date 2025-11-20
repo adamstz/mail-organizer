@@ -682,6 +682,59 @@ def get_rag_engine() -> RAGQueryEngine:
     return _rag_engine
 
 
+# ==================== SYNC ENDPOINTS ====================
+
+from .sync_manager import get_sync_manager
+
+
+@app.get("/api/sync-status")
+async def get_sync_status() -> dict:
+    """Get current sync status including Gmail vs DB counts and progress."""
+    logger.info("GET /api/sync-status")
+    sync_manager = get_sync_manager()
+    status = sync_manager.get_sync_status()
+    logger.debug(f"Sync status: {status}")
+    return status
+
+
+@app.post("/api/sync/pull")
+async def sync_pull() -> dict:
+    """Start pulling new messages from Gmail INBOX."""
+    logger.info("POST /api/sync/pull - Starting pull operation")
+    sync_manager = get_sync_manager()
+    
+    started = sync_manager.start_pull()
+    
+    if not started:
+        logger.warning("Pull operation already running")
+        raise HTTPException(status_code=409, detail="Pull operation already in progress")
+    
+    logger.info("Pull operation started successfully")
+    return {
+        "status": "started",
+        "message": "Pull operation started in background"
+    }
+
+
+@app.post("/api/sync/classify")
+async def sync_classify() -> dict:
+    """Start classifying and embedding unclassified messages."""
+    logger.info("POST /api/sync/classify - Starting classify and embed operation")
+    sync_manager = get_sync_manager()
+    
+    started = sync_manager.start_classify()
+    
+    if not started:
+        logger.warning("Classify operation already running")
+        raise HTTPException(status_code=409, detail="Classify operation already in progress")
+    
+    logger.info("Classify and embed operation started successfully")
+    return {
+        "status": "started",
+        "message": "Classify and embed operation started in background"
+    }
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG queries."""
     question: str

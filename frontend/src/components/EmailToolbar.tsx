@@ -273,14 +273,6 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
                 size="small"
               />
             ))}
-            {filters.labels.length > 1 && (
-              <Chip
-                label="Clear labels"
-                onClick={() => filters.labels.forEach(l => handleLabelFilterClick(l))}
-                variant="outlined"
-                size="small"
-              />
-            )}
           </Box>
         )}
         {filters.priority && (
@@ -296,8 +288,8 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
           <Chip
             label="Clear all filters"
             onClick={handleClearAllFilters}
-            variant="outlined"
-            color="default"
+            variant="filled"
+            color="error"
             size="small"
           />
         )}
