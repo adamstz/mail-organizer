@@ -52,7 +52,7 @@ class EmbeddingService:
         return embedding.tolist()
     
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Embed multiple texts in a batch (more efficient).
+        """Embed multiple texts in a batch (more efficient than one-by-one).
         
         Args:
             texts: List of texts to embed
@@ -63,8 +63,8 @@ class EmbeddingService:
         # Truncate all texts
         texts = [self._truncate_text(t, self.MAX_TOKENS) for t in texts]
         
-        # Batch encode (much faster than one-by-one)
-        embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+        # Batch encode for efficiency
+        embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
         
         return [emb.tolist() for emb in embeddings]
     
