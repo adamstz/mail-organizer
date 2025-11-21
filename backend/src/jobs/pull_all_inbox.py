@@ -27,13 +27,13 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from ..clients.gmail import (
+from src.clients.gmail import (
     build_credentials_from_oauth,
     build_gmail_service,
     fetch_message,
 )
-from ..models.message import MailMessage
-from .. import storage
+from src.models.message import MailMessage
+import src.storage as storage
 
 
 def list_all_message_ids(
@@ -117,6 +117,10 @@ def main():
         help="After sync, save current historyId to ~/.organize_mail_watch.json"
     )
     parser.add_argument(
+        "--repull", action="store_true",
+        help="Re-fetch all messages even if already present in the DB (overwrite/upsert)"
+    )
+    parser.add_argument(
         "--format",
         choices=("full", "metadata", "minimal", "raw"),
         default="full",
@@ -155,12 +159,15 @@ def main():
         print("No messages to fetch.")
         return
 
-    # skip any IDs already stored in DB
-    ids_to_fetch = [mid for mid in ids_to_fetch if mid not in existing_ids]
+    if not args.repull:
+        # skip any IDs already stored in DB
+        ids_to_fetch = [mid for mid in ids_to_fetch if mid not in existing_ids]
 
-    if not ids_to_fetch:
-        print("All messages already in database.")
-        return
+        if not ids_to_fetch:
+            print("All messages already in database.")
+            return
+    else:
+        print("Repull mode enabled: re-fetching all messages (including ones already in DB)")
 
     print(f"Fetching {len(ids_to_fetch)} messages (format={args.format})...")
     print("Processing in batches (sequential fetching for stability)...\n")
@@ -188,13 +195,23 @@ def main():
         messages = fetch_messages_sequential(service, batch, fmt=args.format)
         total_failed += (len(batch) - len(messages))
 
-        # Process and save batch immediately
+        # Process and save batch immediately (batch save for performance)
+        mail_objs = []
         for msg in messages:
             mail_obj = message_summary(msg)
             if mail_obj.has_attachments:
                 with_attachments += 1
-            storage.save_message(mail_obj)
+            mail_objs.append(mail_obj)
             total_saved += 1
+        
+        # Save all messages in this batch with a single transaction
+        backend = storage.get_storage_backend()
+        if hasattr(backend, 'save_messages_batch'):
+            backend.save_messages_batch(mail_objs)
+        else:
+            # Fallback for storage backends without batch support
+            for mail_obj in mail_objs:
+                storage.save_message(mail_obj)
 
         progress_pct = ((i + len(batch)) / total_to_fetch) * 100
         print(f"  ✓ Saved {total_saved} messages so far ({progress_pct:.1f}% complete)\n", file=sys.stderr)

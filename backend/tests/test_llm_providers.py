@@ -10,16 +10,23 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.llm_provider import get_llm_provider
+from src.llm_processor import LLMProcessor
 
 
 def simple_prompt(provider_name: str, prompt: str = "Say hello"):
     print(f"\nTesting provider: {provider_name}")
     try:
-        provider = get_llm_provider(provider_name)
-        response = provider.completion(prompt)
+        os.environ['LLM_PROVIDER'] = provider_name
+        processor = LLMProcessor()
+        response = processor.classify_email(
+            subject=prompt,
+            from_addr="test@example.com",
+            to_addr="you@example.com",
+            body="Test message",
+            snippet="Test"
+        )
         print("Response:")
-        print(response[:1000])
+        print(str(response)[:1000] if response else "No response")
     except Exception as e:
         print(f"Error testing {provider_name}: {e}")
 

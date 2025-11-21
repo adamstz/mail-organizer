@@ -13,7 +13,9 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import pytest
 from src.storage.storage import get_storage_backend
+from src.storage.memory_storage import InMemoryStorage
 from src.embedding_service import EmbeddingService
 from src.llm_processor import LLMProcessor
 from src.rag_engine import RAGQueryEngine
@@ -31,6 +33,11 @@ def test_embedding_status():
     print_banner("1. Checking Embedding Status")
     
     storage = get_storage_backend()
+    
+    # Skip test if using in-memory storage (no connect method)
+    if isinstance(storage, InMemoryStorage):
+        pytest.skip("RAG tests require PostgreSQL storage backend")
+    
     conn = storage.connect()
     cur = conn.cursor()
     
@@ -69,6 +76,9 @@ def test_semantic_search():
     print("Searching for emails about 'meeting schedule'...")
     
     storage = get_storage_backend()
+    if isinstance(storage, InMemoryStorage):
+        pytest.skip("RAG tests require PostgreSQL storage backend")
+    
     embedder = EmbeddingService()
     
     # Embed the search query
@@ -101,6 +111,9 @@ def test_rag_query():
     
     # Initialize RAG engine
     storage = get_storage_backend()
+    if isinstance(storage, InMemoryStorage):
+        pytest.skip("RAG tests require PostgreSQL storage backend")
+    
     embedder = EmbeddingService()
     llm = LLMProcessor()
     rag_engine = RAGQueryEngine(storage, embedder, llm)
@@ -137,10 +150,14 @@ def test_rag_query():
 
 
 def test_find_similar():
-    """Test finding similar emails."""
+    """Find similar emails."""
     print_banner("4. Testing Find Similar Emails")
     
     storage = get_storage_backend()
+    if isinstance(storage, InMemoryStorage):
+        pytest.skip("RAG tests require PostgreSQL storage backend")
+    if isinstance(storage, InMemoryStorage):
+        pytest.skip("RAG tests require PostgreSQL storage backend")
     embedder = EmbeddingService()
     llm = LLMProcessor()
     rag_engine = RAGQueryEngine(storage, embedder, llm)

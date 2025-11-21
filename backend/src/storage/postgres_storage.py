@@ -237,15 +237,65 @@ class PostgresStorage(StorageBackend):
                 msg.to,
                 msg.subject,
                 msg.snippet,
-                msg.labels,
+                Json(msg.labels),
                 msg.internal_date,
-                msg.payload,
+                Json(msg.payload),
                 msg.raw,
-                msg.headers,
+                Json(msg.headers),
                 datetime.now(timezone.utc),
                 msg.has_attachments,
             ),
         )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    def save_messages_batch(self, msgs: List[MailMessage]) -> None:
+        """Save multiple messages in a single transaction for better performance."""
+        if not msgs:
+            return
+        
+        conn = self.connect()
+        cur = conn.cursor()
+
+        for msg in msgs:
+            cur.execute(
+                """
+                INSERT INTO messages
+                (id, thread_id, from_addr, to_addr, subject, snippet, labels,
+                 internal_date, payload, raw, headers, fetched_at, has_attachments)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    thread_id = EXCLUDED.thread_id,
+                    from_addr = EXCLUDED.from_addr,
+                    to_addr = EXCLUDED.to_addr,
+                    subject = EXCLUDED.subject,
+                    snippet = EXCLUDED.snippet,
+                    labels = EXCLUDED.labels,
+                    internal_date = EXCLUDED.internal_date,
+                    payload = EXCLUDED.payload,
+                    raw = EXCLUDED.raw,
+                    headers = EXCLUDED.headers,
+                    fetched_at = EXCLUDED.fetched_at,
+                    has_attachments = EXCLUDED.has_attachments
+                """,
+                (
+                    msg.id,
+                    msg.thread_id,
+                    msg.from_,
+                    msg.to,
+                    msg.subject,
+                    msg.snippet,
+                    Json(msg.labels),
+                    msg.internal_date,
+                    Json(msg.payload),
+                    msg.raw,
+                    Json(msg.headers),
+                    datetime.now(timezone.utc),
+                    msg.has_attachments,
+                ),
+            )
 
         conn.commit()
         cur.close()
@@ -272,7 +322,7 @@ class PostgresStorage(StorageBackend):
             (
                 record.id,
                 record.message_id,
-                record.labels,
+                Json(record.labels),
                 record.priority,
                 record.summary,
                 record.model,
@@ -341,7 +391,7 @@ class PostgresStorage(StorageBackend):
             (
                 classification_id,
                 message_id,
-                labels,
+                Json(labels),
                 priority,
                 summary,
                 model,
