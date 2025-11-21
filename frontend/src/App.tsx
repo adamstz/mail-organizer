@@ -38,6 +38,11 @@ const App: React.FC = () => {
   const [chatWidth, setChatWidth] = useState(41.67); // Default ~5/12 columns in percentage
   const [isDragging, setIsDragging] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [defaultRichMode, setDefaultRichMode] = useState<boolean>(() => {
+    // Load from localStorage on initial mount
+    const saved = localStorage.getItem('emailDefaultRichMode');
+    return saved === 'true';
+  });
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -118,6 +123,12 @@ const App: React.FC = () => {
     setSortOrder(prev => prev === 'recent' ? 'oldest' : 'recent');
   };
 
+  // Save defaultRichMode to localStorage whenever it changes
+  React.useEffect(() => {
+    localStorage.setItem('emailDefaultRichMode', String(defaultRichMode));
+    logger.info(`Default rich mode changed to: ${defaultRichMode}`);
+  }, [defaultRichMode]);
+
   // Log when app loads
   React.useEffect(() => {
     logger.info('Organize Mail application started');
@@ -194,6 +205,8 @@ const App: React.FC = () => {
               onPriorityFilter={handlePriorityFilter}
               selectedModel={selectedModel}
               onModelChange={setSelectedModel}
+              defaultRichMode={defaultRichMode}
+              onDefaultRichModeChange={setDefaultRichMode}
             />
 
             <EmailList 
@@ -201,7 +214,8 @@ const App: React.FC = () => {
               filters={filters} 
               searchQuery={searchQuery} 
               sortOrder={sortOrder} 
-              selectedModel={selectedModel} 
+              selectedModel={selectedModel}
+              defaultRichMode={defaultRichMode}
             />
           </Box>
         </Box>

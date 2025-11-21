@@ -199,6 +199,162 @@ async def get_message(message_id: str) -> dict:
     return msg.to_dict()
 
 
+def _extract_html_from_payload(payload: dict, logger) -> str:
+    """Recursively extract HTML body from Gmail MIME payload structure.
+    
+    Gmail emails often have nested multipart structures like:
+    multipart/alternative
+      |- text/plain
+      |- multipart/related
+          |- text/html
+          |- image
+    
+    This function collects ALL text/html parts and returns the most complete one.
+    
+    Args:
+        payload: Gmail message payload dict
+        logger: Logger instance
+        
+    Returns:
+        Decoded HTML string (longest/most complete), or empty string if not found
+    """
+    import base64
+    
+    if not isinstance(payload, dict):
+        logger.error(f"[MIME EXTRACTION] Payload is not a dict: {type(payload)}")
+        return ""
+    
+    # Collect ALL HTML parts instead of returning the first one
+    html_parts = []
+    
+    def collect_html_recursive(part, depth=0):
+        """Recursively collect all HTML parts."""
+        if not isinstance(part, dict):
+            logger.warning(f"{'  ' * depth}Part is not a dict: {type(part)}")
+            return
+        
+        mime_type = part.get('mimeType', '')
+        logger.debug(f"{'  ' * depth}Checking part: mimeType={mime_type}")
+        
+        # If this part is text/html, extract and collect it
+        if mime_type == 'text/html':
+            body_data = part.get('body', {}).get('data', '')
+            if body_data:
+                try:
+                    html = base64.urlsafe_b64decode(body_data).decode('utf-8', errors='ignore')
+                    html_parts.append(html)
+                    logger.info(f"{'  ' * depth}✓ Found HTML part: {len(html)} chars")
+                except Exception as e:
+                    logger.error(f"{'  ' * depth}Error decoding HTML body: {e}", exc_info=True)
+        
+        # Recurse into child parts
+        child_parts = part.get('parts', [])
+        if child_parts:
+            logger.debug(f"{'  ' * depth}Recursing into {len(child_parts)} child parts")
+            for child_part in child_parts:
+                collect_html_recursive(child_part, depth + 1)
+    
+    # Start recursive collection from root payload
+    logger.info(f"[MIME EXTRACTION] Starting HTML extraction from payload")
+    try:
+        collect_html_recursive(payload)
+    except Exception as e:
+        logger.error(f"[MIME EXTRACTION] Error during recursive collection: {e}", exc_info=True)
+    
+    # Return the LONGEST HTML part (most complete)
+    if html_parts:
+        logger.info(f"[MIME EXTRACTION] Found {len(html_parts)} HTML part(s) with sizes: {[len(p) for p in html_parts]}")
+        longest = max(html_parts, key=len)
+        logger.info(f"[MIME EXTRACTION] Selected longest HTML: {len(longest)} chars")
+        
+        # Print actual content for debugging truncation
+        print("=" * 80)
+        print(f"[MIME] EXTRACTED HTML ({len(longest)} chars)")
+        print("=" * 80)
+        print(f"FIRST 1000 CHARS:\n{longest[:1000]}")
+        print("-" * 80)
+        print(f"LAST 1000 CHARS:\n{longest[-1000:]}")
+        print("=" * 80)
+        
+        # Log if there are images detected for debugging
+        if '<img' in longest:
+            img_count = longest.count('<img')
+            logger.info(f"[MIME EXTRACTION] HTML contains {img_count} <img> tag(s)")
+            print(f"✓ Found {img_count} <img> tags in extracted HTML")
+        else:
+            logger.warning(f"[MIME EXTRACTION] No <img> tags found in HTML")
+            print("⚠ WARNING: No <img> tags found in extracted HTML!")
+        
+        return longest
+    
+    logger.warning(f"[MIME EXTRACTION] No HTML parts found in payload")
+    return ""
+
+
+@app.get("/messages/{message_id}/body")
+async def get_message_body(message_id: str, mode: str = "safe", block_images: bool = True) -> dict:
+    """Get sanitized email body with security processing.
+    
+    This endpoint processes email HTML through multiple security layers:
+    - Removes tracking pixels (1x1 images)
+    - Sanitizes HTML/CSS to prevent XSS
+    - Optionally blocks external images
+    
+    Query params:
+        - mode: 'safe' (plain text) or 'rich' (sanitized HTML) - default: safe
+        - block_images: whether to block external images - default: true
+        
+    Returns:
+        {
+            "sanitized_html": "...",
+            "plain_text": "...", 
+            "has_external_images": true,
+            "external_image_count": 3,
+            "tracking_pixels_removed": 1,
+            "has_blocked_content": true
+        }
+    """
+    from .lib.email_processor import process_email_html
+    
+    logger.debug(f"GET /messages/{message_id}/body?mode={mode}&block_images={block_images}")
+    
+    # Get the message
+    msg = storage.get_message_by_id(message_id)
+    if not msg:
+        logger.warning(f"Message not found: {message_id}")
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    # Extract HTML body from payload using recursive search
+    html_body = ""
+    payload = msg.payload
+    
+    if not isinstance(payload, dict):
+        logger.error(f"Payload is not a dict - type: {type(payload)}")
+        raise HTTPException(status_code=500, detail="Invalid payload format")
+    
+    if payload:
+        html_body = _extract_html_from_payload(payload, logger)
+    
+    # Fallback: use snippet as plain text if no HTML
+    if not html_body:
+        html_body = msg.snippet or ""
+        logger.info(f"No HTML found in payload - using snippet fallback: {len(html_body)} chars")
+        print(f"ℹ️ [API] No HTML found - using snippet fallback: {len(html_body)} chars")
+    
+    print(f"[API] HTML BODY TO PROCESS: {len(html_body)} chars")
+    
+    # Process the email with security features
+    result = process_email_html(html_body, block_images=block_images)
+    
+    logger.info(
+        f"Processed email body for {message_id}: "
+        f"{result.tracking_pixels_removed} pixels removed, "
+        f"{result.external_image_count} external images"
+    )
+    
+    return result.to_dict()
+
+
 @app.get("/messages/{message_id}/classifications")
 async def get_message_classifications(message_id: str) -> List[dict]:
     """Get all classification records for a message (historical)."""

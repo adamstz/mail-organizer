@@ -15,3 +15,8 @@ anthropic>=0.18.0
 # RAG and embeddings
 sentence-transformers>=2.2.0  # Local embedding models
 pgvector>=0.2.0  # PostgreSQL vector extension Python client
+
+# Email security and sanitization
+bleach>=6.0.0  # HTML sanitization
+beautifulsoup4>=4.12.0  # HTML parsing and manipulation
+tinycss2>=1.2.0  # CSS parsing for sanitization

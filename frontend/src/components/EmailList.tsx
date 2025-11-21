@@ -22,9 +22,10 @@ interface EmailListProps {
   searchQuery?: string;
   sortOrder?: 'recent' | 'oldest';
   selectedModel?: string;
+  defaultRichMode?: boolean;
 }
 
-const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOrder = 'recent', selectedModel = 'gemma:2b' }) => {
+const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOrder = 'recent', selectedModel = 'gemma:2b', defaultRichMode = false }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [emails, setEmails] = useState<Email[]>(exampleEmails);
   const [loading, setLoading] = useState<boolean>(false);
@@ -306,6 +307,7 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
             onDelete={handleDelete}
             onReclassify={handleReclassify}
             selectedModel={selectedModel}
+            defaultRichMode={defaultRichMode}
           />
         ))}
       </List>

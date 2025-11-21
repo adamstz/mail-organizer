@@ -47,7 +47,8 @@ interface SyncStatusProps {
 const SyncStatus: React.FC<SyncStatusProps> = ({ onRefresh }) => {
   const [status, setStatus] = useState<SyncStatusData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(true);
+  // Default collapsed to keep the toolbar compact; users can expand if they want details
+  const [isExpanded, setIsExpanded] = useState(false);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;

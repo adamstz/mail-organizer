@@ -93,20 +93,17 @@ export const extractBody = (payloadObj: GmailPayload | null | undefined): string
   
   // Check for parts (multipart messages)
   if (payloadObj.parts && Array.isArray(payloadObj.parts)) {
-    // Prefer text/plain over text/html
+    // Prefer text/html over text/plain (like modern email clients)
+    // HTML contains images, formatting, and rich content
+    const htmlPart = payloadObj.parts.find((p: GmailPayloadPart) => p.mimeType === 'text/html');
+    if (htmlPart) {
+      return extractBody(htmlPart);
+    }
+    
+    // Fall back to text/plain if no HTML version
     const textPart = payloadObj.parts.find((p: GmailPayloadPart) => p.mimeType === 'text/plain');
     if (textPart) {
       return extractBody(textPart);
-    }
-    
-    // Fall back to text/html
-    const htmlPart = payloadObj.parts.find((p: GmailPayloadPart) => p.mimeType === 'text/html');
-    if (htmlPart) {
-      const html = extractBody(htmlPart);
-      // Strip HTML tags for display
-      const temp = document.createElement('div');
-      temp.innerHTML = html;
-      return temp.textContent || temp.innerText || '';
     }
     
     // Recursively check nested parts
@@ -119,35 +116,71 @@ export const extractBody = (payloadObj: GmailPayload | null | undefined): string
   return '';
 };
 
+// More aggressive HTML tag stripping function
+export const stripHtmlTags = (html: string): string => {
+  if (!html) return '';
+  
+  let text = html;
+  
+  // Remove script and style tags and their content completely
+  text = text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+  
+  // Remove HTML comments
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+  
+  // Replace common block-level tags with newlines before removing them
+  text = text.replace(/<\/?(div|p|br|h[1-6]|li|tr|table|thead|tbody)[^>]*>/gi, '\n');
+  
+  // Remove all remaining HTML tags (including any attributes)
+  text = text.replace(/<[^>]+>/g, '');
+  
+  // Remove any standalone HTML attributes that might have leaked through
+  text = text.replace(/\b(?:style|class|id|data-[\w-]+)\s*=\s*["'][^"']*["']/gi, '');
+  text = text.replace(/\b(?:style|class|id|data-[\w-]+)\s*=\s*\S+/gi, '');
+  
+  // Remove CSS-like patterns (e.g., "color: red;", "font-size: 12px;")
+  text = text.replace(/\b[\w-]+\s*:\s*[^;]+;/gi, '');
+  
+  // Decode HTML entities
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = text;
+  text = textarea.value;
+  
+  return text;
+};
+
 // Improved body sanitization
 export const sanitizeBody = (text: string): string => {
   if (!text) return '';
   
   let cleaned = text;
   
+  // First, aggressively strip any HTML tags and CSS
+  cleaned = stripHtmlTags(cleaned);
+  
   // Remove common email tracking pixels and hidden content
   cleaned = cleaned.replace(/\[cid:[^\]]+\]/gi, ''); // Remove [cid:...] references
-  cleaned = cleaned.replace(/\bhttps?:\/\/[^\s]+\.(?:jpg|jpeg|png|gif|webp)\?[^\s]*/gi, '[image]'); // Replace tracking image URLs
+  
+  // Remove CSS @media queries and other at-rules that might have leaked
+  cleaned = cleaned.replace(/@(?:media|import|font-face|keyframes|supports|page|charset)[^{]*\{[^}]*\}/gi, '');
+  
+  // Remove any remaining curly braces (likely from CSS)
+  cleaned = cleaned.replace(/\{[^}]*\}/g, '');
   
   // Remove excessive newlines/whitespace
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n'); // Max 2 consecutive newlines
   cleaned = cleaned.replace(/[ \t]+/g, ' '); // Normalize spaces/tabs to single space
+  cleaned = cleaned.replace(/^\s+/gm, ''); // Remove leading whitespace from lines
   
   // Remove common email footers/disclaimers patterns
-  cleaned = cleaned.replace(/^[\s\S]*?(?=\S)/m, ''); // Trim leading whitespace
   cleaned = cleaned.replace(/\n*-{3,}\n[\s\S]*?(?:unsubscribe|privacy policy|terms of service)[\s\S]*/gi, '\n\n[footer removed]');
-  
-  // Clean up URLs - make them more readable
-  cleaned = cleaned.replace(/https?:\/\/(?:www\.)?([a-z0-9-]+\.[a-z]{2,})[^\s]*/gi, (match, domain) => {
-    // Keep short URLs as-is, truncate long tracking URLs
-    if (match.length > 60) {
-      return `https://${domain}/...`;
-    }
-    return match;
-  });
   
   // Remove zero-width characters and other invisible chars
   cleaned = cleaned.replace(/[\u200B-\u200D\uFEFF]/g, '');
+  
+  // Remove control characters except newlines and tabs
+  cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   
   return cleaned.trim();
 };
@@ -237,8 +270,9 @@ export const parseBackendMessage = (m: Record<string, unknown>): Email | null =>
       rawBody = String(rawSummary);
     }
     
-    // Apply sanitization to body
-    const cleanedBody = sanitizeBody(rawBody);
+    // Don't sanitize here - let EmailBodyRenderer handle it
+    // This way it can detect HTML and offer rich mode if needed
+    const bodyForDisplay = rawBody;
 
     const priority = m.priority;
     const summary = m.summary;
@@ -263,7 +297,7 @@ export const parseBackendMessage = (m: Record<string, unknown>): Email | null =>
       date: displayDate,
       priority: displayPriority,
       summary: sanitizeText(summary ? String(summary) : String(rawSummary)),
-      body: cleanedBody, // Use cleaned body instead of raw
+      body: bodyForDisplay, // Use raw body so EmailBodyRenderer can detect HTML
       classificationLabels: classificationLabels && Array.isArray(classificationLabels) 
         ? classificationLabels.map(String) 
         : undefined,

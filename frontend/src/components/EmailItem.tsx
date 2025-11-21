@@ -20,6 +20,7 @@ import {
 } from '@mui/icons-material';
 import { Email } from '../types/email';
 import { logger } from '../utils/logger';
+import EmailBodyRenderer from './EmailBodyRenderer';
 
 const getPriorityColor = (priority: Email['priority']): 'error' | 'warning' | 'success' | 'default' => {
   switch (priority.toLowerCase()) {
@@ -43,9 +44,10 @@ interface EmailItemProps {
   onDelete: (id: string) => void;
   onReclassify?: (id: string) => void;
   selectedModel?: string;
+  defaultRichMode?: boolean;
 }
 
-const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDelete, onReclassify, selectedModel = 'gemma:2b' }) => {
+const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDelete, onReclassify, selectedModel = 'gemma:2b', defaultRichMode = false }) => {
   const [isReclassifying, setIsReclassifying] = useState(false);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -260,9 +262,7 @@ const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDe
             <Typography variant="subtitle2" color="text.secondary" sx={{ fontWeight: 'bold', mb: 1 }}>
               Body:
             </Typography>
-            <Typography variant="body1" whiteSpace="pre-line">
-              {email.body}
-            </Typography>
+            <EmailBodyRenderer messageId={email.id} defaultRichMode={defaultRichMode} />
           </Box>
         </Box>
       </Collapse>
