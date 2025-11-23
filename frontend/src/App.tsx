@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { ThemeProvider, CssBaseline, Container, AppBar, Toolbar, Typography, Box, IconButton, Tooltip } from '@mui/material';
 import { createTheme } from '@mui/material/styles';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -44,7 +44,7 @@ const App: React.FC = () => {
     setIsDragging(true);
   };
 
-  const handleMouseMove = (e: MouseEvent) => {
+  const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging) return;
 
     const container = document.querySelector('.resizable-container');
@@ -57,11 +57,11 @@ const App: React.FC = () => {
     if (newChatWidth >= 20 && newChatWidth <= 70) {
       setChatWidth(newChatWidth);
     }
-  };
+  }, [isDragging]);
 
-  const handleMouseUp = () => {
+  const handleMouseUp = useCallback(() => {
     setIsDragging(false);
-  };
+  }, []);
 
   React.useEffect(() => {
     if (isDragging) {
@@ -82,7 +82,7 @@ const App: React.FC = () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, [isDragging]);
+  }, [isDragging, handleMouseMove, handleMouseUp]);
 
   const handleStatusChange = (_event: React.MouseEvent<HTMLElement>, newStatus: 'all' | 'classified' | 'unclassified' | null) => {
     if (newStatus !== null) {

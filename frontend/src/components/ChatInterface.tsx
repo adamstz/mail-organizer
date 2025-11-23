@@ -75,11 +75,11 @@ const ChatInterface: React.FC = () => {
 
       logger.info(`Chat query successful: ${data.sources?.length || 0} sources, confidence: ${data.confidence}`);
 
-      const sources: SourceEmail[] = data.sources?.map((source: any) => ({
-        message_id: source.message_id,
-        subject: source.subject || 'No subject',
-        date: source.date || '',
-        from: source.from || '',
+      const sources: SourceEmail[] = data.sources?.map((source: Record<string, unknown>) => ({
+        message_id: source.message_id as string,
+        subject: (source.subject as string) || 'No subject',
+        date: (source.date as string) || '',
+        from: (source.from as string) || '',
         similarity: source.similarity || 0,
         snippet: source.snippet || '',
       })) || [];

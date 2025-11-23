@@ -159,14 +159,14 @@ class PostgresStorage(StorageBackend):
             WHERE embedding IS NOT NULL
             """
         )
-        
+
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_email_chunks_embedding_hnsw
             ON email_chunks USING hnsw (embedding vector_cosine_ops)
             """
         )
-        
+
         # Index for looking up chunks by message_id
         cur.execute(
             """
@@ -174,7 +174,7 @@ class PostgresStorage(StorageBackend):
             ON email_chunks(message_id)
             """
         )
-        
+
         # Index for sorting chunks by position
         cur.execute(
             """
@@ -255,7 +255,7 @@ class PostgresStorage(StorageBackend):
         """Save multiple messages in a single transaction for better performance."""
         if not msgs:
             return
-        
+
         conn = self.connect()
         cur = conn.cursor()
 
@@ -904,42 +904,42 @@ class PostgresStorage(StorageBackend):
         threshold: float = 0.0
     ) -> List[tuple[MailMessage, float]]:
         """Search for similar messages using vector similarity.
-        
+
         Uses cosine distance with pgvector (<=> operator).
         Lower distance = more similar (0.0 = identical, 2.0 = opposite)
-        
+
         Args:
             query_embedding: The embedding vector to search for
             limit: Maximum number of results
             threshold: Minimum similarity threshold (0.0-1.0, where 1.0 is most similar)
-        
+
         Returns:
             List of (message, similarity_score) tuples, ordered by similarity
         """
         conn = self.connect()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         # Convert similarity threshold to distance threshold
         # Cosine similarity = 1 - cosine distance
         # So if threshold is 0.7 similarity, distance must be <= 0.3
-        distance_threshold = 1.0 - threshold
-        
+        # (Currently unused but kept for future optimization)
+
         # Search both messages table and chunks table, union the results
         query = """
             WITH email_scores AS (
                 -- Search single embeddings
-                SELECT 
+                SELECT
                     m.id,
                     1 - (m.embedding <=> %s::vector) as similarity,
                     'single' as source
                 FROM messages m
                 WHERE m.embedding IS NOT NULL
                     AND (1 - (m.embedding <=> %s::vector)) >= %s
-                
+
                 UNION ALL
-                
+
                 -- Search chunked emails
-                SELECT 
+                SELECT
                     ec.message_id as id,
                     MAX(1 - (ec.embedding <=> %s::vector)) as similarity,
                     'chunks' as source
@@ -948,9 +948,9 @@ class PostgresStorage(StorageBackend):
                 GROUP BY ec.message_id
             )
             SELECT DISTINCT ON (es.id)
-                m.*, 
-                c.labels as class_labels, 
-                c.priority as class_priority, 
+                m.*,
+                c.labels as class_labels,
+                c.priority as class_priority,
                 c.summary as class_summary,
                 es.similarity
             FROM email_scores es
@@ -959,7 +959,7 @@ class PostgresStorage(StorageBackend):
             ORDER BY es.id, es.similarity DESC
             LIMIT %s
         """
-        
+
         # Execute with same embedding for all placeholders
         cur.execute(
             query,
@@ -972,7 +972,7 @@ class PostgresStorage(StorageBackend):
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        
+
         results = []
         for r in rows:
             message = MailMessage(
@@ -994,7 +994,7 @@ class PostgresStorage(StorageBackend):
             )
             similarity = float(r['similarity'])
             results.append((message, similarity))
-        
+
         # Sort by similarity descending
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:limit]

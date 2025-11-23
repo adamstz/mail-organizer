@@ -180,6 +180,7 @@ export const sanitizeBody = (text: string): string => {
   cleaned = cleaned.replace(/[\u200B-\u200D\uFEFF]/g, '');
 
   // Remove control characters except newlines and tabs
+  // eslint-disable-next-line no-control-regex
   cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
 
   return cleaned.trim();

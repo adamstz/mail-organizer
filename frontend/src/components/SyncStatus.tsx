@@ -188,7 +188,17 @@ const SyncStatus: React.FC<SyncStatusProps> = ({ onRefresh }) => {
         severity: 'error',
       });
     }
-  }, [status?.pull_progress.status, status?.classify_progress.status]);
+  }, [
+    status?.pull_progress.status,
+    status?.pull_progress.message,
+    status?.pull_progress.processed,
+    status?.pull_progress.completed_at,
+    status?.classify_progress.status,
+    status?.classify_progress.message,
+    status?.classify_progress.processed,
+    status?.classify_progress.completed_at,
+    onRefresh,
+  ]);
 
   const renderProgress = (progress: ProgressInfo, label: string) => {
     if (progress.status === 'running') {

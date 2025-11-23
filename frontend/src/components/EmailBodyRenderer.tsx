@@ -83,7 +83,7 @@ const EmailBodyRenderer: React.FC<EmailBodyRendererProps> = ({
         'background', 'cellpadding', 'cellspacing', 'colspan', 'rowspan', 'hspace', 'vspace',
         'color', 'size', 'face', 'type', 'start', 'value', 'cite', 'datetime', 'name',
       ],
-      ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|data):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+      ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|data):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     });
 
     return {

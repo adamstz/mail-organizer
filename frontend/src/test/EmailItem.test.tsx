@@ -112,7 +112,7 @@ describe('EmailItem Component', () => {
   });
 
   it('calls onReclassify when reclassify button is clicked and API succeeds', async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((_url) => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(() => {
       return Promise.resolve({
         ok: true,
         json: async () => ({ success: true, priority: 'high' }),

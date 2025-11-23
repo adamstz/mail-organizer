@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Typography, Paper, IconButton, Tooltip, Chip, TextField } from '@mui/material';
+import { Box, Typography, IconButton, Tooltip, Chip, TextField } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import PauseIcon from '@mui/icons-material/Pause';

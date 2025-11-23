@@ -5,13 +5,13 @@ from pydantic import BaseModel
 import logging
 import asyncio
 from collections import deque
-import json
 from datetime import datetime
 
 from . import storage
 from .llm_processor import LLMProcessor
 from .embedding_service import EmbeddingService
 from .rag_engine import RAGQueryEngine
+from .sync_manager import get_sync_manager
 
 app = FastAPI(title="organize-mail backend")
 
@@ -28,9 +28,10 @@ app.add_middleware(
 log_buffer = deque(maxlen=500)
 log_subscribers: List[WebSocket] = []
 
+
 class LogBufferHandler(logging.Handler):
     """Custom logging handler that stores logs in memory and broadcasts to WebSocket clients."""
-    
+
     def emit(self, record):
         try:
             log_entry = {
@@ -40,7 +41,7 @@ class LogBufferHandler(logging.Handler):
                 "message": self.format(record)
             }
             log_buffer.append(log_entry)
-            
+
             # Broadcast to all connected WebSocket clients
             disconnected = []
             for ws in log_subscribers:
@@ -48,13 +49,14 @@ class LogBufferHandler(logging.Handler):
                     asyncio.create_task(ws.send_json(log_entry))
                 except Exception:
                     disconnected.append(ws)
-            
+
             # Remove disconnected clients
             for ws in disconnected:
                 if ws in log_subscribers:
                     log_subscribers.remove(ws)
         except Exception:
             pass
+
 
 # Set up logging handler
 log_handler = LogBufferHandler()
@@ -84,13 +86,13 @@ async def websocket_logs(websocket: WebSocket):
     await websocket.accept()
     log_subscribers.append(websocket)
     logger.info(f"New log viewer connected. Total subscribers: {len(log_subscribers)}")
-    
+
     try:
         # Send existing log buffer to new client (make a copy to avoid mutation issues)
         existing_logs = list(log_buffer)
         for log_entry in existing_logs:
             await websocket.send_json(log_entry)
-        
+
         # Keep connection alive and wait for disconnect
         while True:
             # Just wait for messages (we don't expect any from client)
@@ -132,7 +134,7 @@ async def receive_frontend_log(log_entry: FrontendLogRequest):
         }
         log_buffer.append(log_data)
         logger.debug(f"Frontend log received: {log_entry.message}, subscribers: {len(log_subscribers)}")
-        
+
         # Broadcast to all connected WebSocket clients
         disconnected = []
         for ws in log_subscribers:
@@ -142,12 +144,12 @@ async def receive_frontend_log(log_entry: FrontendLogRequest):
             except Exception as e:
                 logger.debug(f"Failed to send to WebSocket: {e}")
                 disconnected.append(ws)
-        
+
         # Remove disconnected clients
         for ws in disconnected:
             if ws in log_subscribers:
                 log_subscribers.remove(ws)
-        
+
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Error receiving frontend log: {e}")
@@ -173,7 +175,7 @@ async def get_messages(limit: int = 50, offset: int = 0) -> dict:
     import time
     from bs4 import BeautifulSoup
     import re
-    
+
     start_time = time.time()
     logger.info(f"GET /messages - limit={limit}, offset={offset}")
 
@@ -184,19 +186,19 @@ async def get_messages(limit: int = 50, offset: int = 0) -> dict:
     for msg in msgs:
         html_body = ""
         payload = msg.get('payload')
-        
+
         # Handle payload deserialization if needed
         if isinstance(payload, str):
+            import json
             try:
-                import json
                 payload = json.loads(payload)
             except (json.JSONDecodeError, TypeError):
                 payload = None
-        
+
         # Extract HTML from payload
         if payload and isinstance(payload, dict):
             html_body = _extract_html_from_payload(payload, logger)
-        
+
         # Generate plain text from HTML
         plain_text = ""
         if html_body:
@@ -210,7 +212,7 @@ async def get_messages(limit: int = 50, offset: int = 0) -> dict:
                 plain_text = msg.get('snippet', '')
         else:
             plain_text = msg.get('snippet', '')
-        
+
         # Add to message dict
         msg['html'] = html_body
         msg['plain_text'] = plain_text
@@ -223,7 +225,6 @@ async def get_messages(limit: int = 50, offset: int = 0) -> dict:
         "limit": limit,
         "offset": offset
     }
-
 
 
 @app.get("/messages/{message_id}")
@@ -240,41 +241,41 @@ async def get_message(message_id: str) -> dict:
 
 def _extract_html_from_payload(payload: dict, logger) -> str:
     """Recursively extract HTML body from Gmail MIME payload structure.
-    
+
     Gmail emails often have nested multipart structures like:
     multipart/alternative
       |- text/plain
       |- multipart/related
           |- text/html
           |- image
-    
+
     This function collects ALL text/html parts and returns the most complete one.
-    
+
     Args:
         payload: Gmail message payload dict
         logger: Logger instance
-        
+
     Returns:
         Decoded HTML string (longest/most complete), or empty string if not found
     """
     import base64
-    
+
     if not isinstance(payload, dict):
         logger.error(f"[MIME EXTRACTION] Payload is not a dict: {type(payload)}")
         return ""
-    
+
     # Collect ALL HTML parts instead of returning the first one
     html_parts = []
-    
+
     def collect_html_recursive(part, depth=0):
         """Recursively collect all HTML parts."""
         if not isinstance(part, dict):
             logger.warning(f"{'  ' * depth}Part is not a dict: {type(part)}")
             return
-        
+
         mime_type = part.get('mimeType', '')
         logger.debug(f"{'  ' * depth}Checking part: mimeType={mime_type}")
-        
+
         # If this part is text/html, extract and collect it
         if mime_type == 'text/html':
             body_data = part.get('body', {}).get('data', '')
@@ -285,27 +286,27 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
                     logger.info(f"{'  ' * depth}✓ Found HTML part: {len(html)} chars")
                 except Exception as e:
                     logger.error(f"{'  ' * depth}Error decoding HTML body: {e}", exc_info=True)
-        
+
         # Recurse into child parts
         child_parts = part.get('parts', [])
         if child_parts:
             logger.debug(f"{'  ' * depth}Recursing into {len(child_parts)} child parts")
             for child_part in child_parts:
                 collect_html_recursive(child_part, depth + 1)
-    
+
     # Start recursive collection from root payload
     logger.info(f"[MIME EXTRACTION] Starting HTML extraction from payload")
     try:
         collect_html_recursive(payload)
     except Exception as e:
         logger.error(f"[MIME EXTRACTION] Error during recursive collection: {e}", exc_info=True)
-    
+
     # Return the LONGEST HTML part (most complete)
     if html_parts:
         logger.info(f"[MIME EXTRACTION] Found {len(html_parts)} HTML part(s) with sizes: {[len(p) for p in html_parts]}")
         longest = max(html_parts, key=len)
         logger.info(f"[MIME EXTRACTION] Selected longest HTML: {len(longest)} chars")
-        
+
         # Print actual content for debugging truncation
         print("=" * 80)
         print(f"[MIME] EXTRACTED HTML ({len(longest)} chars)")
@@ -314,7 +315,7 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
         print("-" * 80)
         print(f"LAST 1000 CHARS:\n{longest[-1000:]}")
         print("=" * 80)
-        
+
         # Log if there are images detected for debugging
         if '<img' in longest:
             img_count = longest.count('<img')
@@ -323,9 +324,9 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
         else:
             logger.warning(f"[MIME EXTRACTION] No <img> tags found in HTML")
             print("⚠ WARNING: No <img> tags found in extracted HTML!")
-        
+
         return longest
-    
+
     logger.warning(f"[MIME EXTRACTION] No HTML parts found in payload")
     return ""
 
@@ -333,10 +334,10 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
 @app.get("/messages/{message_id}/body")
 async def get_message_body(message_id: str) -> dict:
     """Get email body HTML and metadata.
-    
+
     Returns raw HTML extracted from the email payload.
     Frontend is responsible for sanitization with DOMPurify.
-    
+
     Returns:
         {
             "html": "...",  # Raw HTML from email
@@ -345,34 +346,34 @@ async def get_message_body(message_id: str) -> dict:
         }
     """
     logger.debug(f"GET /messages/{message_id}/body")
-    
+
     # Get the message
     msg = storage.get_message_by_id(message_id)
     if not msg:
         logger.warning(f"Message not found: {message_id}")
         raise HTTPException(status_code=404, detail="Message not found")
-    
+
     # Extract HTML body from payload using recursive search
     html_body = ""
     payload = msg.payload
-    
+
     # Handle payload deserialization if it's stored as JSON string
     if isinstance(payload, str):
+        import json
         try:
-            import json
             payload = json.loads(payload)
             logger.debug(f"Deserialized payload from JSON string")
         except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"Failed to deserialize payload: {e}")
             payload = None
-    
+
     if payload and not isinstance(payload, dict):
         logger.error(f"Payload is not a dict after deserialization - type: {type(payload)}")
         payload = None
-    
+
     if payload:
         html_body = _extract_html_from_payload(payload, logger)
-    
+
     # Generate plain text from HTML or use snippet
     plain_text = ""
     if html_body:
@@ -392,15 +393,14 @@ async def get_message_body(message_id: str) -> dict:
             plain_text = msg.snippet or ""
     else:
         plain_text = msg.snippet or ""
-    
+
     logger.info(f"Extracted email body for {message_id}: {len(html_body)} chars HTML, {len(plain_text)} chars plain text")
-    
+
     return {
         "html": html_body,
         "plain_text": plain_text,
         "snippet": msg.snippet or ""
     }
-
 
 
 @app.get("/messages/{message_id}/classifications")
@@ -714,9 +714,9 @@ async def filter_advanced(
 @app.get("/models")
 async def list_models() -> dict:
     """List available LLM models from Ollama."""
+    import json
     import os
     import urllib.request
-    import json
 
     ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
@@ -739,7 +739,7 @@ async def start_ollama() -> dict:
     """Start the Ollama service."""
     import subprocess
     import os
-    
+
     logger.info("Starting Ollama service...")
     try:
         # Try to start Ollama in the background
@@ -747,7 +747,7 @@ async def start_ollama() -> dict:
             subprocess.Popen(['ollama', 'serve'], creationflags=subprocess.CREATE_NO_WINDOW)
         else:  # Unix/Linux/Mac
             subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        
+
         logger.info("Ollama service start command issued")
         return {"status": "started", "message": "Ollama service is starting"}
     except FileNotFoundError:
@@ -874,6 +874,7 @@ async def reclassify_message(message_id: str, request: ReclassifyRequest) -> dic
 # Lazy initialization of RAG components
 _rag_engine: Optional[RAGQueryEngine] = None
 
+
 def get_rag_engine() -> RAGQueryEngine:
     """Get or initialize the RAG query engine."""
     global _rag_engine
@@ -887,8 +888,6 @@ def get_rag_engine() -> RAGQueryEngine:
 
 
 # ==================== SYNC ENDPOINTS ====================
-
-from .sync_manager import get_sync_manager
 
 
 @app.get("/api/sync-status")
@@ -906,13 +905,13 @@ async def sync_pull() -> dict:
     """Start pulling new messages from Gmail INBOX."""
     logger.info("POST /api/sync/pull - Starting pull operation")
     sync_manager = get_sync_manager()
-    
+
     started = sync_manager.start_pull()
-    
+
     if not started:
         logger.warning("Pull operation already running")
         raise HTTPException(status_code=409, detail="Pull operation already in progress")
-    
+
     logger.info("Pull operation started successfully")
     return {
         "status": "started",
@@ -925,13 +924,13 @@ async def sync_classify() -> dict:
     """Start classifying and embedding unclassified messages."""
     logger.info("POST /api/sync/classify - Starting classify and embed operation")
     sync_manager = get_sync_manager()
-    
+
     started = sync_manager.start_classify()
-    
+
     if not started:
         logger.warning("Classify operation already running")
         raise HTTPException(status_code=409, detail="Classify operation already in progress")
-    
+
     logger.info("Classify and embed operation started successfully")
     return {
         "status": "started",
@@ -949,12 +948,12 @@ class QueryRequest(BaseModel):
 @app.post("/api/query")
 async def query_emails(request: QueryRequest) -> dict:
     """Ask a question and get an answer based on email content.
-    
+
     This uses RAG (Retrieval-Augmented Generation):
     1. Converts your question to a vector embedding
     2. Finds the most similar emails
     3. Uses an LLM to answer based on those emails
-    
+
     Example request:
     {
         "question": "What invoices did I receive last month?",
@@ -964,9 +963,9 @@ async def query_emails(request: QueryRequest) -> dict:
     """
     import logging
     logger = logging.getLogger("uvicorn")
-    
+
     logger.info(f"[RAG QUERY] Question: {request.question}")
-    
+
     try:
         rag_engine = get_rag_engine()
         result = rag_engine.query(
@@ -974,11 +973,11 @@ async def query_emails(request: QueryRequest) -> dict:
             top_k=request.top_k,
             similarity_threshold=request.similarity_threshold
         )
-        
+
         logger.info(f"[RAG QUERY] Answer generated with {len(result['sources'])} sources, confidence: {result['confidence']}")
-        
+
         return result
-    
+
     except Exception as e:
         logger.error(f"[RAG QUERY] Error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -987,26 +986,26 @@ async def query_emails(request: QueryRequest) -> dict:
 @app.get("/api/similar/{message_id}")
 async def find_similar(message_id: str, limit: int = 5) -> dict:
     """Find emails similar to a given email.
-    
+
     Uses vector similarity to find semantically similar emails.
     Useful for finding related conversations or duplicate emails.
     """
     import logging
     logger = logging.getLogger("uvicorn")
-    
+
     logger.info(f"[SIMILAR] Finding similar emails to {message_id}, limit={limit}")
-    
+
     try:
         rag_engine = get_rag_engine()
         similar = rag_engine.find_similar_emails(message_id, limit=limit)
-        
+
         logger.info(f"[SIMILAR] Found {len(similar)} similar emails")
-        
+
         return {
             "message_id": message_id,
             "similar_emails": similar
         }
-    
+
     except Exception as e:
         logger.error(f"[SIMILAR] Error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Similarity search failed: {str(e)}")
@@ -1015,38 +1014,38 @@ async def find_similar(message_id: str, limit: int = 5) -> dict:
 @app.get("/api/embedding_status")
 async def embedding_status() -> dict:
     """Get statistics about embedding coverage.
-    
+
     Returns how many emails have been embedded and are ready for semantic search.
     """
     from .storage.storage import get_storage_backend
-    
+
     backend = get_storage_backend()
     conn = backend.connect()
     cur = conn.cursor()
-    
+
     # Count embedded messages
     cur.execute("""
-        SELECT 
+        SELECT
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE embedding IS NOT NULL) as single_embeddings,
             COUNT(*) FILTER (WHERE embedding_model IS NOT NULL AND embedding IS NULL) as chunked_embeddings
         FROM messages
     """)
     row = cur.fetchone()
-    
+
     # Count chunks
     cur.execute("SELECT COUNT(*) as chunk_count FROM email_chunks")
     chunk_row = cur.fetchone()
-    
+
     cur.close()
     conn.close()
-    
+
     total = row[0]
     single = row[1]
     chunked = row[2]
     embedded = single + chunked
     chunks = chunk_row[0]
-    
+
     return {
         "total_messages": total,
         "embedded_messages": embedded,

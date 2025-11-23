@@ -24,7 +24,7 @@ class FrontendLogger {
     }
   }
 
-  private logToConsole(level: LogLevel, message: string, ...args: any[]) {
+  private logToConsole(level: LogLevel, message: string, ...args: unknown[]) {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}] [${level.toUpperCase()}]`;
     
@@ -47,19 +47,19 @@ class FrontendLogger {
     }
   }
 
-  debug(message: string, ...args: any[]) {
+  debug(message: string, ...args: unknown[]) {
     this.logToConsole('debug', message, ...args);
   }
 
-  info(message: string, ...args: any[]) {
+  info(message: string, ...args: unknown[]) {
     this.logToConsole('info', message, ...args);
   }
 
-  warning(message: string, ...args: any[]) {
+  warning(message: string, ...args: unknown[]) {
     this.logToConsole('warning', message, ...args);
   }
 
-  error(message: string, ...args: any[]) {
+  error(message: string, ...args: unknown[]) {
     this.logToConsole('error', message, ...args);
   }
 }

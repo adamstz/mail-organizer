@@ -160,6 +160,7 @@ const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDe
               width: '100%',
             }}
             onClick={() => onExpand(email.id)}
+            data-testid="email-item-clickable"
           >
             <ListItemText
               primary={

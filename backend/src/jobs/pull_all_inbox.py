@@ -203,7 +203,7 @@ def main():
                 with_attachments += 1
             mail_objs.append(mail_obj)
             total_saved += 1
-        
+
         # Save all messages in this batch with a single transaction
         backend = storage.get_storage_backend()
         if hasattr(backend, 'save_messages_batch'):
