@@ -22,11 +22,12 @@ import shlex
 import subprocess
 import urllib.request
 import urllib.error
+from .classification_labels import ALLOWED_LABELS
+from .llm_prompts import CLASSIFICATION_SYSTEM_MESSAGE, build_classification_prompt
 
 
 class LLMProcessor:
     # Shared LLM configuration
-    SYSTEM_MESSAGE = "You are an email classification assistant. Return only valid JSON with no explanations."
     TEMPERATURE = 0.3
     MAX_TOKENS = 200
     TIMEOUT = 60  # Increased for slower local models
@@ -108,7 +109,7 @@ class LLMProcessor:
 
     def _categorize_with_llm(self, subject: str, body: str) -> Dict:
         """Common LLM categorization flow: build prompt → call provider → parse response."""
-        prompt = self._build_classification_prompt(subject, body)
+        prompt = build_classification_prompt(subject, body)
 
         # Get raw LLM response based on provider
         if self.provider == "openai":
@@ -140,7 +141,7 @@ class LLMProcessor:
         response = client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": self.SYSTEM_MESSAGE},
+                {"role": "system", "content": CLASSIFICATION_SYSTEM_MESSAGE},
                 {"role": "user", "content": prompt}
             ],
             temperature=self.TEMPERATURE,
@@ -177,7 +178,7 @@ class LLMProcessor:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": self.SYSTEM_MESSAGE},
+                {"role": "system", "content": CLASSIFICATION_SYSTEM_MESSAGE},
                 {"role": "user", "content": prompt}
             ],
             "stream": False,
@@ -219,51 +220,6 @@ class LLMProcessor:
 
         return proc.stdout.decode("utf-8").strip()
 
-    def _build_classification_prompt(self, subject: str, body: str) -> str:
-        """Build a structured prompt for LLM classification."""
-        # Truncate body to avoid token limits
-        body_truncated = body[:2000] if body else ""
-
-        return f"""Classify this email into categories, assign a priority level, and provide a brief summary.
-
-Email to classify:
-Subject: {subject}
-Body: {body_truncated}
-
-Instructions:
-- You MUST ONLY choose labels from this exact list (do not create new labels):
-  finance, banking, investments, security, authentication, meetings, appointments,
-  personal, work, career, shopping, social, entertainment, news, newsletters,
-  promotions, marketing, spam, travel, health, education, legal, taxes, receipts,
-  notifications, updates, alerts, support, bills, insurance, job-application,
-  job-interview, job-offer, job-rejection, job-ad, job-followup
-- For job-related emails, use specific job labels:
-  * job-application: confirmation that you applied for a job
-  * job-interview: interview invitations or scheduling
-  * job-offer: job offers received
-  * job-rejection: rejection notifications
-  * job-ad: job opportunity advertisements (LinkedIn, Indeed, etc.)
-  * job-followup: follow-up emails about applications
-- Choose 1-3 most relevant labels from the list above
-- Assign priority: "high" (urgent/important), "normal" (routine), or "low" (can wait)
-- Write a brief summary (1-2 sentences) of the email's main purpose
-- Return ONLY a JSON object in this exact format:
-
-{{"labels": ["category1", "category2"], "priority": "normal", "summary": "Brief description of the email"}}
-
-Do not include explanations or markdown. Only output valid JSON. Do not invent labels not in the list."""
-
-    # Allowed label whitelist
-    ALLOWED_LABELS = {
-        "finance", "banking", "investments", "security", "authentication",
-        "meetings", "appointments", "personal", "work", "career",
-        "shopping", "social", "entertainment", "news", "newsletters",
-        "promotions", "marketing", "spam", "travel", "health", "education",
-        "legal", "taxes", "receipts", "notifications", "updates", "alerts",
-        "support", "bills", "insurance", "job-application", "job-interview",
-        "job-offer", "job-rejection", "job-ad", "job-followup"
-    }
-
     def _parse_llm_response(self, content: str) -> Dict:
         """Parse LLM response, handling common formatting issues."""
         # Try to extract JSON from markdown code blocks if present
@@ -299,7 +255,7 @@ Do not include explanations or markdown. Only output valid JSON. Do not invent l
             normalized_labels = []
             for label in result["labels"]:
                 label_lower = str(label).lower().strip()
-                if label_lower in self.ALLOWED_LABELS:
+                if label_lower in ALLOWED_LABELS:
                     normalized_labels.append(label_lower)
             result["labels"] = normalized_labels
 

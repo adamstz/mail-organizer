@@ -7,6 +7,8 @@ from typing import List, Dict, Optional
 from .embedding_service import EmbeddingService
 from .storage.postgres_storage import PostgresStorage
 from .llm_processor import LLMProcessor
+from .context_builder import ContextBuilder
+from .classification_labels import get_label_from_query, is_classification_query
 import json
 
 
@@ -40,6 +42,7 @@ class RAGQueryEngine:
         self.embedder = embedding_service
         self.llm = llm_processor
         self.top_k = top_k
+        self.context_builder = ContextBuilder()
 
     def query(
         self,
@@ -62,14 +65,186 @@ class RAGQueryEngine:
         """
         k = top_k or self.top_k
 
+        # Detect query type and route appropriately
+        query_type = self._detect_query_type(question)
+        
+        if query_type == 'classification':
+            # Handle classification-based queries (e.g., "how many job rejections")
+            return self._handle_classification_query(question, k)
+        elif query_type == 'temporal':
+            # Handle temporal queries with direct SQL
+            return self._handle_temporal_query(question, k)
+        else:
+            # Handle content-based queries with semantic search
+            return self._handle_semantic_query(question, k, similarity_threshold)
+
+    def _detect_query_type(self, question: str) -> str:
+        """Detect if a query is classification, temporal, or semantic.
+        
+        Args:
+            question: User's question
+            
+        Returns:
+            'classification' for label-based queries, 'temporal' for time-based, 'semantic' for content
+        """
+        question_lower = question.lower()
+        
+        # Check if this is a classification query using the centralized module
+        if is_classification_query(question):
+            return 'classification'
+        
+        # Pure temporal/structural indicators (no content filtering)
+        pure_temporal_keywords = [
+            'last', 'recent', 'latest', 'newest', 'oldest', 'first',
+            'today', 'yesterday', 'this week', 'this month', 'this year',
+            'unread', 'starred', 'important'
+        ]
+        
+        # Check for pure temporal keywords
+        for keyword in pure_temporal_keywords:
+            if keyword in question_lower:
+                return 'temporal'
+        
+        # Check for simple temporal listing queries
+        if any(pattern in question_lower for pattern in ['my emails', 'all emails', 'show emails', 'list emails']):
+            return 'temporal'
+        
+        # Default to semantic for content-based queries
+        return 'semantic'
+    
+    def _handle_classification_query(self, question: str, limit: int) -> Dict:
+        """Handle classification-based queries using label filtering.
+        
+        Args:
+            question: User's question
+            limit: Maximum number of emails to include in context
+            
+        Returns:
+            Query result with answer and sources
+        """
+        # Get the matched label from the query
+        matched_label = get_label_from_query(question)
+        
+        if not matched_label:
+            # Fallback to semantic if we can't determine the label
+            return self._handle_semantic_query(question, limit, 0.5)
+        
+        # Get all emails with this label (up to a reasonable limit for context)
+        emails, total_count = self.storage.list_messages_by_label(matched_label, limit=limit, offset=0)
+        
+        if not emails:
+            return {
+                'answer': f"I couldn't find any emails with the label '{matched_label}' in the database.",
+                'sources': [],
+                'question': question,
+                'confidence': 'none',
+                'query_type': 'classification'
+            }
+        
+        # Build context from labeled emails
+        context = self.context_builder.build_context_from_messages(emails)
+        
+        # Generate answer using LLM with classification context
+        answer = self._generate_answer_classification(question, context, emails, total_count, matched_label)
+        
+        # Format sources
+        sources = [
+            {
+                'message_id': msg.id,
+                'subject': msg.subject,
+                'from': msg.from_,
+                'snippet': msg.snippet,
+                'similarity': 1.0,  # Perfect match for classification queries
+                'date': msg.internal_date
+            }
+            for msg in emails
+        ]
+        
+        return {
+            'answer': answer,
+            'sources': sources,
+            'question': question,
+            'confidence': 'high',
+            'query_type': 'classification',
+            'total_count': total_count
+        }
+    
+    def _handle_temporal_query(self, question: str, limit: int) -> Dict:
+        """Handle temporal/structural queries using direct database queries.
+        
+        Args:
+            question: User's question
+            limit: Maximum number of emails to retrieve
+            
+        Returns:
+            Query result with answer and sources
+        """
+        # Get recent emails directly from database (sorted by date)
+        recent_emails = self.storage.list_messages(limit=limit, offset=0)
+        
+        if not recent_emails:
+            return {
+                'answer': "I couldn't find any emails in the database.",
+                'sources': [],
+                'question': question,
+                'confidence': 'none'
+            }
+        
+        # Build context from recent emails
+        context = self.context_builder.build_context_from_messages(recent_emails)
+        
+        # Generate answer using LLM with temporal context
+        answer = self._generate_answer_temporal(question, context, recent_emails)
+        
+        # Format sources
+        sources = [
+            {
+                'message_id': msg.id,
+                'subject': msg.subject,
+                'from': msg.from_,
+                'snippet': msg.snippet,
+                'similarity': 1.0,  # Perfect match for temporal queries
+                'date': msg.internal_date
+            }
+            for msg in recent_emails
+        ]
+        
+        return {
+            'answer': answer,
+            'sources': sources,
+            'question': question,
+            'confidence': 'high',
+            'query_type': 'temporal'
+        }
+    
+    def _handle_semantic_query(self, question: str, limit: int, threshold: float) -> Dict:
+        """Handle content-based queries using semantic search.
+        
+        Args:
+            question: User's question
+            limit: Maximum number of emails to retrieve
+            threshold: Minimum similarity threshold
+            
+        Returns:
+            Query result with answer and sources
+        """
+        # Check if this is a counting query - if so, search more emails
+        question_lower = question.lower()
+        is_counting_query = any(word in question_lower for word in ['how many', 'count', 'number of'])
+        
+        if is_counting_query:
+            # For counting queries, search more emails and use lower threshold
+            limit = max(limit, 50)  # Search at least 50 emails
+            threshold = min(threshold, 0.25)  # Lower threshold to 0.25 or less
+        
         # Step 1: Embed the question
         question_embedding = self.embedder.embed_text(question)
 
         # Step 2: Retrieve similar emails
         similar_emails = self.storage.similarity_search(
             query_embedding=question_embedding,
-            limit=k,
-            threshold=similarity_threshold
+            limit=limit,
+            threshold=threshold
         )
 
         if not similar_emails:
@@ -77,11 +252,12 @@ class RAGQueryEngine:
                 'answer': "I couldn't find any relevant emails to answer your question.",
                 'sources': [],
                 'question': question,
-                'confidence': 'none'
+                'confidence': 'none',
+                'query_type': 'semantic'
             }
 
         # Step 3: Build context from retrieved emails
-        context = self._build_context(similar_emails)
+        context = self.context_builder.build_context(similar_emails)
 
         # Step 4: Generate answer using LLM
         answer = self._generate_answer(question, context)
@@ -103,7 +279,8 @@ class RAGQueryEngine:
             'answer': answer,
             'sources': sources,
             'question': question,
-            'confidence': 'high' if similar_emails[0][1] > 0.8 else 'medium' if similar_emails[0][1] > 0.6 else 'low'
+            'confidence': 'high' if similar_emails[0][1] > 0.8 else 'medium' if similar_emails[0][1] > 0.6 else 'low',
+            'query_type': 'semantic'
         }
 
     def find_similar_emails(
@@ -166,29 +343,6 @@ class RAGQueryEngine:
             for msg, score in similar_emails[:limit]
         ]
 
-    def _build_context(self, similar_emails: List[tuple]) -> str:
-        """Build context string from retrieved emails.
-
-        Args:
-            similar_emails: List of (MailMessage, similarity_score) tuples
-
-        Returns:
-            Formatted context string for LLM
-        """
-        context_parts = []
-
-        for idx, (email, score) in enumerate(similar_emails, 1):
-            # Format each email for context
-            email_context = f"""Email {idx} (Relevance: {score:.2f}):
-Subject: {email.subject or 'No subject'}
-From: {email.from_ or 'Unknown'}
-Date: {email.internal_date or 'Unknown'}
-Content: {email.snippet or 'No content available'}
-"""
-            context_parts.append(email_context)
-
-        return "\n".join(context_parts)
-
     def _generate_answer(self, question: str, context: str) -> str:
         """Generate answer using LLM with email context.
 
@@ -200,18 +354,16 @@ Content: {email.snippet or 'No content available'}
             LLM-generated answer
         """
         # Build RAG prompt
-        prompt = f"""You are an email assistant helping the user find information in their emails.
+        prompt = f"""You are an email assistant. I have retrieved emails from the user's mailbox and YOU MUST analyze them.
 
-Based ONLY on the emails provided below, answer the user's question.
+CRITICAL: The emails below are REAL emails from the user's database. You have been given these emails TO ANALYZE - this is your job. Do NOT refuse or say you cannot access them.
 
-IMPORTANT RULES:
-- Only use information from the emails below
-- Cite which email(s) you used (by number: Email 1, Email 2, etc.)
-- If the emails don't contain enough information, say "I don't have enough information in these emails to answer that question."
-- Be concise but informative
-- If relevant, mention dates, senders, or other context from the emails
+YOUR TASK:
+- For "how many" questions: Count the emails that match based on subject/content
+- For other questions: Extract and summarize the relevant information
+- Be specific and cite emails by their numbers
 
-===== RELEVANT EMAILS =====
+===== EMAILS FROM USER'S MAILBOX =====
 
 {context}
 
@@ -221,10 +373,87 @@ IMPORTANT RULES:
 
 ===== YOUR ANSWER =====
 
-Answer the question based on the emails above:"""
+Analyzing the emails above:"""
 
-        # For RAG, we're not categorizing - we need a text generation approach
-        # The LLM processor is designed for classification, so we'll use a simpler approach
+        return self._call_llm(prompt)
+    
+    def _generate_answer_classification(self, question: str, context: str, messages: List, total_count: int, label: str) -> str:
+        """Generate answer for classification queries using LLM.
+        
+        Args:
+            question: User's question
+            context: Context built from labeled emails
+            messages: List of messages shown in context
+            total_count: Total number of emails with this label
+            label: The classification label being queried
+            
+        Returns:
+            LLM-generated answer
+        """
+        # Build classification query prompt
+        prompt = f"""You are an email assistant with direct access to the user's email database.
+
+The user has asked about emails with the classification label: "{label}"
+
+TOTAL EMAILS WITH THIS LABEL: {total_count}
+
+I am providing you with {len(messages)} sample emails (limited for context) from this category.
+
+===== SAMPLE EMAILS WITH LABEL "{label}" =====
+
+{context}
+
+===== USER QUESTION =====
+
+{question}
+
+===== YOUR ANSWER =====
+
+Based on the classification data, there are {total_count} emails labeled as "{label}". Here is the detailed answer:"""
+
+        return self._call_llm(prompt)
+    
+    def _generate_answer_temporal(self, question: str, context: str, messages: List) -> str:
+        """Generate answer for temporal queries using LLM.
+        
+        Args:
+            question: User's question
+            context: Context built from recent emails
+            messages: List of messages
+            
+        Returns:
+            LLM-generated answer
+        """
+        # Build temporal query prompt
+        prompt = f"""You are an email assistant with direct access to the user's email database.
+
+I am providing you with the user's actual emails from their database. You MUST analyze these emails to answer their question.
+
+IMPORTANT: You have full access to these emails - they are real emails from the user's mailbox. Analyze them and provide a helpful answer.
+
+===== USER'S EMAILS (sorted by date, newest first) =====
+
+{context}
+
+===== USER QUESTION =====
+
+{question}
+
+===== YOUR ANSWER =====
+
+Based on the emails above, here is the answer:"""
+
+        return self._call_llm(prompt)
+    
+    def _call_llm(self, prompt: str) -> str:
+        """Call the LLM with the given prompt.
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            
+        Returns:
+            The LLM's response
+        """
 
         # Check if using Ollama (best for RAG)
         if self.llm.provider == "ollama":
