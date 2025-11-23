@@ -39,7 +39,7 @@ class PostgresStorage(StorageBackend):
         conn = self.connect()
         cur = conn.cursor()
 
-        # Messages table
+        # Messages table (includes vector embedding columns for RAG)
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (
@@ -56,7 +56,10 @@ class PostgresStorage(StorageBackend):
                 headers JSONB,
                 fetched_at TIMESTAMP WITH TIME ZONE,
                 has_attachments BOOLEAN DEFAULT FALSE,
-                latest_classification_id TEXT
+                latest_classification_id TEXT,
+                embedding vector(384),
+                embedding_model TEXT,
+                embedded_at TIMESTAMP WITH TIME ZONE
             )
             """
         )
@@ -83,6 +86,21 @@ class PostgresStorage(StorageBackend):
                 model TEXT,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 FOREIGN KEY(message_id) REFERENCES messages(id)
+            )
+            """
+        )
+
+        # Email chunks table for long emails (RAG support)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_chunks (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                chunk_text TEXT NOT NULL,
+                embedding vector(384),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(message_id, chunk_index)
             )
             """
         )
@@ -128,6 +146,40 @@ class PostgresStorage(StorageBackend):
             """
             CREATE INDEX IF NOT EXISTS idx_messages_latest_classification
             ON messages(latest_classification_id) WHERE latest_classification_id IS NOT NULL
+            """
+        )
+
+        # Create HNSW indexes for vector similarity search (RAG support)
+        # HNSW = Hierarchical Navigable Small World (fast approximate nearest neighbor)
+        # vector_cosine_ops = use cosine distance for similarity
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_messages_embedding_hnsw
+            ON messages USING hnsw (embedding vector_cosine_ops)
+            WHERE embedding IS NOT NULL
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_chunks_embedding_hnsw
+            ON email_chunks USING hnsw (embedding vector_cosine_ops)
+            """
+        )
+
+        # Index for looking up chunks by message_id
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_chunks_message_id
+            ON email_chunks(message_id)
+            """
+        )
+
+        # Index for sorting chunks by position
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_chunks_chunk_index
+            ON email_chunks(message_id, chunk_index)
             """
         )
 
@@ -185,15 +237,65 @@ class PostgresStorage(StorageBackend):
                 msg.to,
                 msg.subject,
                 msg.snippet,
-                Json(msg.labels) if msg.labels is not None else None,
+                Json(msg.labels),
                 msg.internal_date,
-                Json(msg.payload) if msg.payload is not None else None,
+                Json(msg.payload),
                 msg.raw,
-                Json(msg.headers) if msg.headers is not None else None,
+                Json(msg.headers),
                 datetime.now(timezone.utc),
                 msg.has_attachments,
             ),
         )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    def save_messages_batch(self, msgs: List[MailMessage]) -> None:
+        """Save multiple messages in a single transaction for better performance."""
+        if not msgs:
+            return
+
+        conn = self.connect()
+        cur = conn.cursor()
+
+        for msg in msgs:
+            cur.execute(
+                """
+                INSERT INTO messages
+                (id, thread_id, from_addr, to_addr, subject, snippet, labels,
+                 internal_date, payload, raw, headers, fetched_at, has_attachments)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    thread_id = EXCLUDED.thread_id,
+                    from_addr = EXCLUDED.from_addr,
+                    to_addr = EXCLUDED.to_addr,
+                    subject = EXCLUDED.subject,
+                    snippet = EXCLUDED.snippet,
+                    labels = EXCLUDED.labels,
+                    internal_date = EXCLUDED.internal_date,
+                    payload = EXCLUDED.payload,
+                    raw = EXCLUDED.raw,
+                    headers = EXCLUDED.headers,
+                    fetched_at = EXCLUDED.fetched_at,
+                    has_attachments = EXCLUDED.has_attachments
+                """,
+                (
+                    msg.id,
+                    msg.thread_id,
+                    msg.from_,
+                    msg.to,
+                    msg.subject,
+                    msg.snippet,
+                    Json(msg.labels),
+                    msg.internal_date,
+                    Json(msg.payload),
+                    msg.raw,
+                    Json(msg.headers),
+                    datetime.now(timezone.utc),
+                    msg.has_attachments,
+                ),
+            )
 
         conn.commit()
         cur.close()
@@ -220,7 +322,7 @@ class PostgresStorage(StorageBackend):
             (
                 record.id,
                 record.message_id,
-                Json(record.labels) if record.labels is not None else None,
+                Json(record.labels),
                 record.priority,
                 record.summary,
                 record.model,
@@ -289,7 +391,7 @@ class PostgresStorage(StorageBackend):
             (
                 classification_id,
                 message_id,
-                Json(labels) if labels else None,
+                Json(labels),
                 priority,
                 summary,
                 model,
@@ -802,42 +904,42 @@ class PostgresStorage(StorageBackend):
         threshold: float = 0.0
     ) -> List[tuple[MailMessage, float]]:
         """Search for similar messages using vector similarity.
-        
+
         Uses cosine distance with pgvector (<=> operator).
         Lower distance = more similar (0.0 = identical, 2.0 = opposite)
-        
+
         Args:
             query_embedding: The embedding vector to search for
             limit: Maximum number of results
             threshold: Minimum similarity threshold (0.0-1.0, where 1.0 is most similar)
-        
+
         Returns:
             List of (message, similarity_score) tuples, ordered by similarity
         """
         conn = self.connect()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         # Convert similarity threshold to distance threshold
         # Cosine similarity = 1 - cosine distance
         # So if threshold is 0.7 similarity, distance must be <= 0.3
-        distance_threshold = 1.0 - threshold
-        
+        # (Currently unused but kept for future optimization)
+
         # Search both messages table and chunks table, union the results
         query = """
             WITH email_scores AS (
                 -- Search single embeddings
-                SELECT 
+                SELECT
                     m.id,
                     1 - (m.embedding <=> %s::vector) as similarity,
                     'single' as source
                 FROM messages m
                 WHERE m.embedding IS NOT NULL
                     AND (1 - (m.embedding <=> %s::vector)) >= %s
-                
+
                 UNION ALL
-                
+
                 -- Search chunked emails
-                SELECT 
+                SELECT
                     ec.message_id as id,
                     MAX(1 - (ec.embedding <=> %s::vector)) as similarity,
                     'chunks' as source
@@ -846,9 +948,9 @@ class PostgresStorage(StorageBackend):
                 GROUP BY ec.message_id
             )
             SELECT DISTINCT ON (es.id)
-                m.*, 
-                c.labels as class_labels, 
-                c.priority as class_priority, 
+                m.*,
+                c.labels as class_labels,
+                c.priority as class_priority,
                 c.summary as class_summary,
                 es.similarity
             FROM email_scores es
@@ -857,7 +959,7 @@ class PostgresStorage(StorageBackend):
             ORDER BY es.id, es.similarity DESC
             LIMIT %s
         """
-        
+
         # Execute with same embedding for all placeholders
         cur.execute(
             query,
@@ -870,7 +972,7 @@ class PostgresStorage(StorageBackend):
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        
+
         results = []
         for r in rows:
             message = MailMessage(
@@ -892,7 +994,7 @@ class PostgresStorage(StorageBackend):
             )
             similarity = float(r['similarity'])
             results.append((message, similarity))
-        
+
         # Sort by similarity descending
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:limit]

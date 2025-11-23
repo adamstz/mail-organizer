@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox run
+.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox pull-inbox-repull run
 
 # Python virtual environment
 VENV_PATH = ../.venv
@@ -29,7 +29,8 @@ help:
 	@echo "  make classify-force - Re-classify all messages (even if already classified)"
 	@echo ""
 	@echo "Gmail sync commands:"
-	@echo "  make pull-inbox     - Pull all messages from Gmail INBOX to database"
+	@echo "  make pull-inbox        - Pull all messages from Gmail INBOX to database"
+	@echo "  make pull-inbox-repull - Re-pull all INBOX messages (overwrite existing)"
 
 # Run all tests
 test: lint
@@ -126,7 +127,11 @@ classify-force:
 
 # Pull all messages from Gmail INBOX
 pull-inbox:
-	$(PYTHON) -m src.jobs.pull_all_inbox --save-history
+	PYTHONPATH=. $(PYTHON) -m src.jobs.pull_all_inbox --save-history
+
+# Re-pull all INBOX messages (overwrite existing)
+pull-inbox-repull:
+	PYTHONPATH=. $(PYTHON) -m src.jobs.pull_all_inbox --save-history --repull
 
 # Run the FastAPI server
 run:

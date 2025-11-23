@@ -11,6 +11,7 @@ import { Email } from '../types/email';
 import EmailItem from './EmailItem';
 import { parseBackendMessage } from '../utils/emailParser';
 import exampleEmails from '../test/exampleEmails';
+import { logger } from '../utils/logger';
 
 interface EmailListProps {
   filters?: {
@@ -43,22 +44,24 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
   useEffect(() => {
     // Create AbortController to cancel request if filters change
     const abortController = new AbortController();
-    
+
     async function load() {
       setLoading(true);
       setError(null);
       try {
         const offset = (page - 1) * pageSize; // Convert 1-indexed page to 0-indexed offset
         let url = `/messages?limit=${pageSize}&offset=${offset}`;
-        
+
+        logger.info(`Loading emails: page=${page}, offset=${offset}`);
+
         // Determine which endpoint to use based on filters
         if (filters) {
-          const hasMultipleFilters = 
-            (filters.priority ? 1 : 0) + 
-            (filters.labels.length > 0 ? 1 : 0) + 
+          const hasMultipleFilters =
+            (filters.priority ? 1 : 0) +
+            (filters.labels.length > 0 ? 1 : 0) +
             (filters.status !== 'all' ? 1 : 0) > 1 ||
             filters.labels.length > 1;
-          
+
           // Use advanced filter endpoint for multiple filters
           if (hasMultipleFilters) {
             const params = new URLSearchParams();
@@ -86,26 +89,29 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
             }
           }
         }
-        
+
+        logger.debug(`Fetching: ${url}`);
         const res = await fetch(url, { signal: abortController.signal });
-        
+
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const ct = res.headers.get('content-type') || '';
-        
+
         let data: unknown[] = [];
         if (ct.includes('application/json')) {
           const text = await res.text();
-          
+
           const parsed = JSON.parse(text);
-            
+
           // Handle new paginated response format: {data: [...], total: N}
           if (parsed && typeof parsed === 'object' && 'data' in parsed && 'total' in parsed) {
             data = parsed.data;
             setTotalCount(parsed.total);
+            logger.info(`Loaded ${data.length} emails (total: ${parsed.total})`);
           } else if (Array.isArray(parsed)) {
             // Fallback for old format (direct array)
             data = parsed;
             setTotalCount(parsed.length);
+            logger.info(`Loaded ${data.length} emails`);
           }
         } else {
           // backend not available or returned HTML (e.g. index.html) — handle gracefully
@@ -124,11 +130,11 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
 
         // Apply client-side search filter (backend doesn't handle search query)
         let filtered = mapped;
-        
+
         // Apply search query filter
         if (searchQuery && searchQuery.trim().length > 0) {
           const query = searchQuery.toLowerCase();
-          filtered = filtered.filter(email => 
+          filtered = filtered.filter(email =>
             email.subject.toLowerCase().includes(query) ||
             email.summary.toLowerCase().includes(query) ||
             email.body.toLowerCase().includes(query) ||
@@ -137,19 +143,22 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
             (email.classificationLabels && email.classificationLabels.some(l => l.toLowerCase().includes(query)))
           );
         }
-        
+
         // Apply sort order
         if (sortOrder === 'oldest') {
           filtered = [...filtered].reverse();
         }
-        
+
         setEmails(filtered);
       } catch (err) {
         // Ignore abort errors - these are expected when filters change
         if (err instanceof Error && err.name === 'AbortError') {
+          logger.debug('Request aborted (expected)');
           return;
         }
-        setError(err instanceof Error ? err.message : String(err));
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`Failed to load emails: ${errorMsg}`);
+        setError(errorMsg);
         setEmails(exampleEmails);
       } finally {
         // Only clear loading if this request wasn't aborted
@@ -159,7 +168,7 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
       }
     }
     load();
-    
+
     // Cleanup: abort request if component unmounts or dependencies change
     return () => {
       abortController.abort();
@@ -182,7 +191,7 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
   const handleReclassify = async (id: string) => {
     // Fetch the updated message and update it in the list
     console.log('[RECLASSIFY] Fetching updated message:', id);
-    
+
     // Log BEFORE state
     const beforeEmail = emails.find(e => e.id === id);
     console.log('[RECLASSIFY] BEFORE:', {
@@ -191,7 +200,7 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
       labels: beforeEmail?.classificationLabels,
       summary: beforeEmail?.summary
     });
-    
+
     try {
       const res = await fetch(`/messages/${id}`);
       console.log('[RECLASSIFY] Fetch response status:', res.status);
@@ -212,11 +221,11 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
             summary: updatedEmail.summary
           });
           setEmails(prevEmails => {
-            const updated = prevEmails.map(email => 
+            const updated = prevEmails.map(email =>
               email.id === id ? updatedEmail : email
             );
             console.log('[RECLASSIFY] Updated emails array, found match:', updated.some(e => e.id === id));
-            
+
             // Log AFTER state
             const afterEmail = updated.find(e => e.id === id);
             console.log('[RECLASSIFY] AFTER:', {
@@ -225,7 +234,7 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
               labels: afterEmail?.classificationLabels,
               summary: afterEmail?.summary
             });
-            
+
             return updated;
           });
         } else {
@@ -240,10 +249,10 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
   };
 
   return (
-    <Paper 
-      elevation={0} 
-      sx={{ 
-        width: "100%", 
+    <Paper
+      elevation={0}
+      sx={{
+        width: "100%",
         flexGrow: 1,
         bgcolor: 'transparent',
         height: '100%',
@@ -255,11 +264,11 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
     >
       {/* Loading state with spinner */}
       {loading && (
-        <Box 
-          sx={{ 
-            display: 'flex', 
+        <Box
+          sx={{
+            display: 'flex',
             flexDirection: 'column',
-            alignItems: 'center', 
+            alignItems: 'center',
             justifyContent: 'center',
             minHeight: '200px',
             gap: 2
@@ -283,30 +292,30 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
 
       {/* Email list */}
       {!loading && (
-        <List sx={{ 
-        width: '100%',
-        mx: 'auto',
-        minWidth: '100%'
-      }}>
-        {emails.map((email) => (
-          <EmailItem
-            key={email.id}
-            email={email}
-            isExpanded={expandedId === email.id}
-            onExpand={handleExpand}
-            onDelete={handleDelete}
-            onReclassify={handleReclassify}
-            selectedModel={selectedModel}
-          />
-        ))}
-      </List>
+        <List sx={{
+          width: '100%',
+          mx: 'auto',
+          minWidth: '100%'
+        }}>
+          {emails.map((email) => (
+            <EmailItem
+              key={email.id}
+              email={email}
+              isExpanded={expandedId === email.id}
+              onExpand={handleExpand}
+              onDelete={handleDelete}
+              onReclassify={handleReclassify}
+              selectedModel={selectedModel}
+            />
+          ))}
+        </List>
       )}
-      
+
       {!loading && totalCount > pageSize && (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-          <Pagination 
-            count={Math.ceil(totalCount / pageSize)} 
-            page={page} 
+          <Pagination
+            count={Math.ceil(totalCount / pageSize)}
+            page={page}
             onChange={(_, value) => setPage(value)}
             color="primary"
             showFirstButton

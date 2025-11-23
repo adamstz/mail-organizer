@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Box, ToggleButton, ToggleButtonGroup, TextField, InputAdornment, Chip, Stack, Typography, Button, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
-import { Search as SearchIcon, ArrowUpward as ArrowUpIcon, ArrowDownward as ArrowDownIcon, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon } from '@mui/icons-material';
+import { Box, ToggleButton, ToggleButtonGroup, TextField, InputAdornment, Chip, Stack, Typography, Button, Select, MenuItem, FormControl, InputLabel, Alert } from '@mui/material';
+import { Search as SearchIcon, ArrowUpward as ArrowUpIcon, ArrowDownward as ArrowDownIcon, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, Refresh as RefreshIcon } from '@mui/icons-material';
+import { logger } from '../utils/logger';
 
 interface EmailToolbarProps {
   searchQuery: string;
@@ -41,8 +42,96 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
   const [labels, setLabels] = useState<Label[]>([]);
   const [loading, setLoading] = useState(false);
   const [showAllLabels, setShowAllLabels] = useState(false);
-  const [models, setModels] = useState<Array<{name: string; size: number}>>([]);
+  const [models, setModels] = useState<Array<{ name: string; size: number }>>([]);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
+  const [startingOllama, setStartingOllama] = useState(false);
   const MAX_VISIBLE_LABELS = 6; // Number of labels to show before collapsing
+
+  // Wrapper functions to add logging
+  const handlePriorityFilterClick = (priority: string) => {
+    logger.info(`User clicked priority filter: ${priority}`);
+    onPriorityFilter(priority);
+  };
+
+  const handleLabelFilterClick = (label: string) => {
+    console.log('handleLabelFilterClick called with:', label);
+    logger.info(`User clicked label filter: ${label}`);
+    onLabelFilter(label);
+  };
+
+  const handleStatusChange = (event: React.MouseEvent<HTMLElement>, newStatus: 'all' | 'classified' | 'unclassified' | null) => {
+    if (newStatus !== null) {
+      logger.info(`User changed status filter to: ${newStatus}`);
+      onStatusChange(event, newStatus);
+    }
+  };
+
+  const handleClearAllFilters = () => {
+    logger.info('User clicked clear all filters');
+    onClearAllFilters();
+  };
+
+  const handleSortToggle = () => {
+    logger.info(`User toggled sort order from ${sortOrder} to ${sortOrder === 'recent' ? 'oldest' : 'recent'}`);
+    onSortToggle();
+  };
+
+  const handleSearchChange = (query: string) => {
+    if (query.trim()) {
+      logger.info(`User searching for: ${query}`);
+    }
+    onSearchChange(query);
+  };
+
+  const handleModelChange = (model: string) => {
+    logger.info(`User selected model: ${model}`);
+    onModelChange(model);
+  };
+
+
+
+  const fetchModels = async () => {
+    try {
+      const res = await fetch('/models');
+      if (res.ok) {
+        const data = await res.json();
+        setModels(data.models || []);
+        setOllamaError(null);
+      } else if (res.status === 503) {
+        const data = await res.json();
+        setOllamaError(data.detail || 'Ollama service not available');
+        setModels([]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch models:', err);
+      setOllamaError('Failed to connect to Ollama');
+      setModels([]);
+    }
+  };
+
+  const handleStartOllama = async () => {
+    setStartingOllama(true);
+    logger.info('User requested to start Ollama');
+    try {
+      const res = await fetch('/api/ollama/start', { method: 'POST' });
+      if (res.ok) {
+        logger.info('Ollama start request successful');
+        // Wait a bit then refetch models
+        setTimeout(() => {
+          fetchModels();
+          setStartingOllama(false);
+        }, 3000);
+      } else {
+        const data = await res.json();
+        setOllamaError(data.detail || 'Failed to start Ollama');
+        setStartingOllama(false);
+      }
+    } catch (err) {
+      console.error('Failed to start Ollama:', err);
+      setOllamaError('Failed to start Ollama service');
+      setStartingOllama(false);
+    }
+  };
 
   useEffect(() => {
     async function fetchLabels() {
@@ -62,19 +151,7 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
         setLoading(false);
       }
     }
-    
-    async function fetchModels() {
-      try {
-        const res = await fetch('/models');
-        if (res.ok) {
-          const data = await res.json();
-          setModels(data.models || []);
-        }
-      } catch (err) {
-        console.error('Failed to fetch models:', err);
-      }
-    }
-    
+
     fetchLabels();
     fetchModels();
   }, []);
@@ -82,12 +159,13 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
   return (
     <Box sx={{ mb: 2 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: 2 }}>
-        <FormControl size="small" sx={{ minWidth: 150 }}>
+        <FormControl size="small" sx={{ minWidth: 150 }} error={!!ollamaError}>
           <InputLabel>LLM Model</InputLabel>
           <Select
             value={selectedModel}
             label="LLM Model"
-            onChange={(e) => onModelChange(e.target.value)}
+            onChange={(e) => handleModelChange(e.target.value)}
+            disabled={models.length === 0}
           >
             {models.map((model) => (
               <MenuItem key={model.name} value={model.name}>
@@ -96,12 +174,29 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
             ))}
           </Select>
         </FormControl>
-        
+
+        {ollamaError && (
+          <>
+            <Alert severity="warning" sx={{ py: 0, alignItems: 'center' }}>
+              {ollamaError}
+            </Alert>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={startingOllama ? <RefreshIcon className="spin" /> : <RefreshIcon />}
+              onClick={handleStartOllama}
+              disabled={startingOllama}
+            >
+              {startingOllama ? 'Starting...' : 'Start Ollama'}
+            </Button>
+          </>
+        )}
+
         <TextField
           size="small"
           placeholder="Search emails..."
           value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
+          onChange={(e) => handleSearchChange(e.target.value)}
           sx={{ minWidth: 250 }}
           InputProps={{
             startAdornment: (
@@ -111,22 +206,22 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
             ),
           }}
         />
-        
+
         <Chip
           icon={sortOrder === 'recent' ? <ArrowDownIcon /> : <ArrowUpIcon />}
           label={sortOrder === 'recent' ? 'Newest First' : 'Oldest First'}
-          onClick={onSortToggle}
+          onClick={handleSortToggle}
           variant="outlined"
-          sx={{ 
+          sx={{
             cursor: 'pointer',
             '&:hover': { bgcolor: 'action.hover' }
           }}
         />
-        
+
         <ToggleButtonGroup
           value={filters.status}
           exclusive
-          onChange={onStatusChange}
+          onChange={handleStatusChange}
           size="small"
           aria-label="classification status filter"
         >
@@ -145,7 +240,7 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Chip
             label="🔴 High"
-            onClick={() => onPriorityFilter('high')}
+            onClick={() => handlePriorityFilterClick('high')}
             variant={filters.priority === 'high' ? 'filled' : 'outlined'}
             color={filters.priority === 'high' ? 'error' : 'default'}
             size="small"
@@ -153,7 +248,7 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
           />
           <Chip
             label="🟡 Normal"
-            onClick={() => onPriorityFilter('normal')}
+            onClick={() => handlePriorityFilterClick('normal')}
             variant={filters.priority === 'normal' ? 'filled' : 'outlined'}
             color={filters.priority === 'normal' ? 'primary' : 'default'}
             size="small"
@@ -161,7 +256,7 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
           />
           <Chip
             label="🟢 Low"
-            onClick={() => onPriorityFilter('low')}
+            onClick={() => handlePriorityFilterClick('low')}
             variant={filters.priority === 'low' ? 'filled' : 'outlined'}
             color={filters.priority === 'low' ? 'success' : 'default'}
             size="small"
@@ -175,25 +270,17 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
               <Chip
                 key={label}
                 label={label}
-                onDelete={() => onLabelFilter(label)}
+                onDelete={() => handleLabelFilterClick(label)}
                 color="primary"
                 size="small"
               />
             ))}
-            {filters.labels.length > 1 && (
-              <Chip
-                label="Clear labels"
-                onClick={() => filters.labels.forEach(l => onLabelFilter(l))}
-                variant="outlined"
-                size="small"
-              />
-            )}
           </Box>
         )}
         {filters.priority && (
           <Chip
             label={`Priority: ${filters.priority}`}
-            onDelete={() => onPriorityFilter(filters.priority!)}
+            onDelete={() => handlePriorityFilterClick(filters.priority!)}
             color="secondary"
             variant="outlined"
             size="small"
@@ -202,9 +289,9 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
         {(filters.labels.length > 0 || filters.priority || filters.status !== 'all') && (
           <Chip
             label="Clear all filters"
-            onClick={onClearAllFilters}
-            variant="outlined"
-            color="default"
+            onClick={handleClearAllFilters}
+            variant="filled"
+            color="error"
             size="small"
           />
         )}
@@ -228,25 +315,25 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
                     <Chip
                       key={label.name}
                       label={`${label.name} (${label.count})`}
-                      onClick={() => onLabelFilter(label.name)}
+                      onClick={() => handleLabelFilterClick(label.name)}
                       variant={isSelected ? 'filled' : 'outlined'}
                       color={isSelected ? 'primary' : 'default'}
                       size="small"
-                      sx={{ 
+                      sx={{
                         cursor: 'pointer',
                         '&:hover': { bgcolor: 'action.hover' }
                       }}
                     />
                   );
                 })}
-              
+
               {/* Show expand/collapse button if there are more labels than MAX_VISIBLE_LABELS */}
               {labels.length > MAX_VISIBLE_LABELS && (
                 <Button
                   size="small"
                   onClick={() => setShowAllLabels(!showAllLabels)}
                   startIcon={showAllLabels ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                  sx={{ 
+                  sx={{
                     textTransform: 'none',
                     minWidth: 'auto',
                     px: 1
