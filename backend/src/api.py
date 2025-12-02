@@ -959,7 +959,7 @@ async def query_emails(request: QueryRequest) -> dict:
     print(f"[API QUERY] Question: '{request.question}'")
     print(f"[API QUERY] Top K: {request.top_k}")
     print(f"[API QUERY] Similarity Threshold: {request.similarity_threshold}")
-    
+
     logger.info(f"[RAG QUERY] Question: {request.question}")
 
     start_time = time.time()
@@ -968,7 +968,7 @@ async def query_emails(request: QueryRequest) -> dict:
         print(f"[API QUERY] Getting RAG engine...")
         rag_engine = get_rag_engine()
         print(f"[API QUERY] RAG engine obtained successfully")
-        
+
         print(f"[API QUERY] Calling RAG engine query...")
         result = rag_engine.query(
             question=request.question,

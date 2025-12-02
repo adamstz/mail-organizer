@@ -1,25 +1,35 @@
-"""RAG (Retrieval-Augmented Generation) engine for email question answering.
+"""RAG (Retrieval-Augmented Generation) engine using LangChain for email question answering.
 
-This module combines vector search with LLM generation to answer questions
+This module combines vector search with LangChain-powered LLM generation to answer questions
 about your emails based on semantic similarity.
 """
 from typing import List, Dict, Optional
+import logging
+from langchain_core.messages import SystemMessage, HumanMessage
+import json
+
 from .embedding_service import EmbeddingService
 from ..storage.postgres_storage import PostgresStorage
 from .llm_processor import LLMProcessor
 from .context_builder import ContextBuilder
 from ..classification_labels import get_label_from_query, is_classification_query
-import json
+from .prompt_templates import (
+    QUERY_CLASSIFICATION_PROMPT,
+    CONVERSATION_PROMPT,
+)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class RAGQueryEngine:
-    """RAG engine for question-answering over emails.
+    """LangChain-powered RAG engine for question-answering over emails.
 
     How it works:
-    1. Convert user question to embedding
+    1. Convert user question to embedding (for semantic search)
     2. Find most similar emails using vector search
     3. Build context from retrieved emails
-    4. Ask LLM to answer based on context
+    4. Use LangChain chain to generate answer based on context
     5. Return answer with source citations
     """
 
@@ -35,7 +45,7 @@ class RAGQueryEngine:
         Args:
             storage: PostgreSQL storage backend with vector search
             embedding_service: Service for generating embeddings
-            llm_processor: LLM for generating answers
+            llm_processor: LangChain-based LLM processor
             top_k: Number of similar emails to retrieve (default: 5)
         """
         self.storage = storage
@@ -43,6 +53,9 @@ class RAGQueryEngine:
         self.llm = llm_processor
         self.top_k = top_k
         self.context_builder = ContextBuilder()
+
+        # Log RAG configuration
+        logger.info(f"[RAG INIT] Initialized RAG engine - LLM Provider: {llm_processor.provider}, Model: {llm_processor.model}, Top-K: {top_k}")
 
     def query(
         self,
@@ -63,49 +76,46 @@ class RAGQueryEngine:
                 - sources: List of source emails with metadata
                 - question: The original question
         """
-        print("=" * 80)
-        print(f"[RAG QUERY] Starting query processing")
-        print(f"[RAG QUERY] Question: '{question}'")
-        print(f"[RAG QUERY] Top K: {top_k or self.top_k}")
-        print(f"[RAG QUERY] Similarity Threshold: {similarity_threshold}")
-        
         k = top_k or self.top_k
+
+        logger.info(f"[RAG QUERY] Processing question with {self.llm.provider}/{self.llm.model}")
+        logger.info(f"[RAG QUERY] Question: '{question}', top_k: {k}, threshold: {similarity_threshold}")
 
         # Detect query type and route appropriately
         query_type = self._detect_query_type(question)
-        print(f"[RAG QUERY] Detected query type: {query_type}")
-        
+        logger.info(f"[RAG QUERY] Detected query type: {query_type}")
+
         if query_type == 'conversation':
-            print(f"[RAG QUERY] Routing to conversation handler")
+            logger.info(f"[RAG QUERY] Routing to conversation handler")
             return self._handle_conversation(question)
         elif query_type == 'aggregation':
-            print(f"[RAG QUERY] Routing to aggregation handler")
+            logger.info(f"[RAG QUERY] Routing to aggregation handler")
             return self._handle_aggregation_query(question)
         elif query_type == 'search-by-sender':
-            print(f"[RAG QUERY] Routing to search-by-sender handler")
+            logger.info(f"[RAG QUERY] Routing to search-by-sender handler")
             return self._handle_search_by_sender(question, k)
         elif query_type == 'search-by-attachment':
-            print(f"[RAG QUERY] Routing to search-by-attachment handler")
+            logger.info(f"[RAG QUERY] Routing to search-by-attachment handler")
             return self._handle_search_by_attachment(question, k)
         elif query_type == 'classification':
-            print(f"[RAG QUERY] Routing to classification handler")
+            logger.info(f"[RAG QUERY] Routing to classification handler")
             return self._handle_classification_query(question, k)
         elif query_type == 'filtered-temporal':
-            print(f"[RAG QUERY] Routing to filtered-temporal handler")
+            logger.info(f"[RAG QUERY] Routing to filtered-temporal handler")
             return self._handle_filtered_temporal_query(question, k)
         elif query_type == 'temporal':
-            print(f"[RAG QUERY] Routing to temporal handler")
+            logger.info(f"[RAG QUERY] Routing to temporal handler")
             return self._handle_temporal_query(question, k)
         else:
-            print(f"[RAG QUERY] Routing to semantic handler")
+            logger.info(f"[RAG QUERY] Routing to semantic handler")
             return self._handle_semantic_query(question, k, similarity_threshold)
 
     def _detect_query_type(self, question: str) -> str:
         """Detect query type using LLM classification.
-        
+
         Args:
             question: User's question
-            
+
         Returns:
             One of: 'conversation', 'aggregation', 'search-by-sender', 'search-by-attachment',
                    'classification', 'filtered-temporal', 'temporal', 'semantic'
@@ -113,27 +123,16 @@ class RAGQueryEngine:
         # Check if this is a classification query using centralized module first
         if is_classification_query(question):
             return 'classification'
-        
+
         # Use LLM to intelligently classify the query type
-        print(f"[QUERY DETECTION] Using LLM to classify query type")
-        
-        classification_prompt = f"""Classify this email query in ONE word:
+        logger.debug(f"[QUERY DETECTION] Using LLM to classify query type")
 
-"{question}"
-
-Rules:
-- aggregation: if asks "how many total" or "who emails most" or "statistics"
-- filtered-temporal: if has BOTH time word (recent/latest/last) AND topic/sender
-- search-by-sender: if "all from X" without time word
-- temporal: if time word but no specific topic
-- conversation: if just greeting/thanks
-- semantic: everything else
-
-Answer with ONE word:"""
+        # Use centralized prompt template
+        classification_prompt = QUERY_CLASSIFICATION_PROMPT.replace("{question}", question)
 
         try:
             classification = self._call_llm_simple(classification_prompt).strip().lower()
-            
+
             # Handle common LLM preambles like "the answer is X" or "sure, the answer is X"
             if 'answer is' in classification:
                 # Extract the word after "answer is"
@@ -147,20 +146,20 @@ Answer with ONE word:"""
             else:
                 # Extract just the first word from the response
                 first_word = classification.split()[0] if classification else ''
-            
+
             # Clean up punctuation
             first_word = first_word.strip('.,!?":;')
-            
+
             # Extract the classification
             valid_types = {
                 'conversation', 'aggregation', 'search-by-sender', 'search_by_sender',
                 'search-by-attachment', 'search_by_attachment', 'filtered-temporal',
                 'filtered_temporal', 'temporal', 'semantic'
             }
-            
+
             # Normalize underscores to hyphens
             first_word = first_word.replace('_', '-')
-            
+
             if first_word in valid_types:
                 detected_type = first_word
             # Map common response words to actual types
@@ -185,48 +184,55 @@ Answer with ONE word:"""
             else:
                 print(f"[QUERY DETECTION] LLM returned unexpected value: '{classification}', defaulting to semantic")
                 detected_type = 'semantic'
-            
+
             print(f"[QUERY DETECTION] LLM classified query as: {detected_type}")
             return detected_type
-            
+
         except Exception as e:
             print(f"[QUERY DETECTION] LLM classification failed ({e}), using fallback heuristic")
             question_lower = question.lower()
-            
+
             # Simple fallback heuristics
             if any(word in question_lower for word in ['hello', 'hi', 'thanks', 'thank you', 'help', 'what can you']):
                 return 'conversation'
-            
+
             has_temporal = any(word in question_lower for word in ['recent', 'latest', 'last', 'newest', 'first', 'oldest'])
             has_content_filter = any(word in question_lower for word in ['from', 'about', 'uber', 'amazon', 'linkedin'])
-            
+
             if has_temporal and has_content_filter:
                 return 'filtered-temporal'
             elif has_temporal:
                 return 'temporal'
             else:
                 return 'semantic'
-    
+
     def _handle_conversation(self, question: str) -> Dict:
-        """Handle conversational queries (greetings, help, etc).
-        
+        """Handle conversational queries (greetings, help, etc) using LangChain.
+
         Args:
             question: User's question
-            
+
         Returns:
             Query result with conversational response
         """
-        print(f"[CONVERSATION] Handling conversational query")
-        
-        question_lower = question.lower()
-        
-        # Detect intent
-        if any(word in question_lower for word in ['hello', 'hi', 'hey']):
-            answer = "Hello! I'm your email assistant. I can help you search your emails, find specific messages, get statistics about your inbox, and answer questions about your email content. What would you like to know?"
-        elif any(word in question_lower for word in ['thank', 'thanks']):
-            answer = "You're welcome! Let me know if you need anything else."
-        elif any(word in question_lower for word in ['help', 'what can you', 'how does', 'how do']):
-            answer = """I can help you with:
+        logger.info(f"[CONVERSATION] Handling conversational query")
+
+        if self.llm.llm:
+            # Use LangChain with centralized prompt
+            formatted_prompt = CONVERSATION_PROMPT.format(question=question)
+            messages = [HumanMessage(content=formatted_prompt)]
+            response = self.llm.llm.invoke(messages)
+            answer = response.content.strip()
+        else:
+            # Fallback to rule-based responses
+            question_lower = question.lower()
+
+            if any(word in question_lower for word in ['hello', 'hi', 'hey']):
+                answer = "Hello! I'm your email assistant. I can help you search your emails, find specific messages, get statistics about your inbox, and answer questions about your email content. What would you like to know?"
+            elif any(word in question_lower for word in ['thank', 'thanks']):
+                answer = "You're welcome! Let me know if you need anything else."
+            elif any(word in question_lower for word in ['help', 'what can you', 'how does', 'how do']):
+                answer = """I can help you with:
 • Finding recent emails: "show me my latest emails"
 • Searching by sender: "all emails from john@company.com"
 • Content search: "emails about meetings"
@@ -235,9 +241,9 @@ Answer with ONE word:"""
 • Finding attachments: "emails with PDFs"
 
 Just ask me anything about your emails!"""
-        else:
-            answer = "I'm here to help! You can ask me about your emails, search for specific messages, or get statistics about your inbox. What would you like to know?"
-        
+            else:
+                answer = "I'm here to help! You can ask me about your emails, search for specific messages, or get statistics about your inbox. What would you like to know?"
+
         return {
             'answer': answer,
             'sources': [],
@@ -245,29 +251,29 @@ Just ask me anything about your emails!"""
             'confidence': 'high',
             'query_type': 'conversation'
         }
-    
+
     def _handle_aggregation_query(self, question: str) -> Dict:
         """Handle aggregation/statistical queries.
-        
+
         Args:
             question: User's question
-            
+
         Returns:
             Query result with statistical answer
         """
         print(f"[AGGREGATION] Processing aggregation query")
-        
+
         from psycopg2.extras import RealDictCursor
         conn = self.storage.connect()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         question_lower = question.lower()
-        
+
         # Determine what stats to calculate
         if 'per day' in question_lower or 'daily' in question_lower:
             # Emails per day
             sql = """
-                SELECT 
+                SELECT
                     DATE(to_timestamp(internal_date/1000)) as date,
                     COUNT(*) as count
                 FROM messages
@@ -278,7 +284,7 @@ Just ask me anything about your emails!"""
             """
             cur.execute(sql)
             rows = cur.fetchall()
-            
+
             if rows:
                 avg_per_day = sum(r['count'] for r in rows) / len(rows)
                 answer = f"You receive an average of {avg_per_day:.1f} emails per day (based on the last 30 days)."
@@ -286,7 +292,7 @@ Just ask me anything about your emails!"""
             else:
                 answer = "I couldn't calculate email statistics."
                 sources = []
-                
+
         elif 'how many' in question_lower and ('unread' in question_lower or 'not read' in question_lower):
             # Unread count
             sql = "SELECT COUNT(*) as count FROM messages WHERE labels::text LIKE '%UNREAD%'"
@@ -294,7 +300,7 @@ Just ask me anything about your emails!"""
             count = cur.fetchone()['count']
             answer = f"You have {count} unread emails."
             sources = []
-            
+
         elif 'how many' in question_lower or 'total' in question_lower:
             # Total email count
             sql = "SELECT COUNT(*) as count FROM messages"
@@ -302,7 +308,7 @@ Just ask me anything about your emails!"""
             count = cur.fetchone()['count']
             answer = f"You have {count:,} total emails in your database."
             sources = []
-            
+
         elif 'most common sender' in question_lower or 'who emails me most' in question_lower:
             # Top senders
             sql = """
@@ -315,9 +321,9 @@ Just ask me anything about your emails!"""
             """
             cur.execute(sql)
             rows = cur.fetchall()
-            
+
             if rows:
-                top_senders = '\n'.join([f"{i+1}. {r['from_addr']}: {r['count']} emails" for i, r in enumerate(rows)])
+                top_senders = '\n'.join([f"{i + 1}. {r['from_addr']}: {r['count']} emails" for i, r in enumerate(rows)])
                 answer = f"Your top email senders:\n{top_senders}"
                 sources = []
             else:
@@ -330,10 +336,10 @@ Just ask me anything about your emails!"""
             total = cur.fetchone()['total']
             answer = f"I found {total:,} emails in your database. Could you be more specific about what statistics you'd like?"
             sources = []
-        
+
         cur.close()
         conn.close()
-        
+
         return {
             'answer': answer,
             'sources': sources,
@@ -341,30 +347,30 @@ Just ask me anything about your emails!"""
             'confidence': 'high',
             'query_type': 'aggregation'
         }
-    
+
     def _handle_search_by_sender(self, question: str, limit: int) -> Dict:
         """Handle search for all emails from a specific sender.
-        
+
         Args:
             question: User's question
             limit: Maximum number of emails to return
-            
+
         Returns:
             Query result with emails from sender
         """
         print(f"[SEARCH BY SENDER] Processing sender search")
-        
+
         # Use LLM to extract sender
         extraction_prompt = f"""Extract sender from: "{question}"
 
 Examples:
 - "emails from uber" → uber
-- "all from amazon" → amazon  
+- "all from amazon" → amazon
 - "linkedin messages" → linkedin
 - "john@company.com emails" → john@company.com
 
 Sender name only:"""
-        
+
         try:
             response = self._call_llm_simple(extraction_prompt).strip()
             # Clean up - take first word/token only
@@ -379,14 +385,14 @@ Sender name only:"""
                 'confidence': 'none',
                 'query_type': 'search-by-sender'
             }
-        
+
         # Query database
         from psycopg2.extras import RealDictCursor
         conn = self.storage.connect()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         sql = """
-            SELECT m.*, 
+            SELECT m.*,
                    c.labels as class_labels,
                    c.priority as class_priority,
                    c.summary as class_summary
@@ -396,13 +402,13 @@ Sender name only:"""
             ORDER BY m.internal_date DESC
             LIMIT %s
         """
-        
+
         cur.execute(sql, (f'%{sender}%', limit))
         rows = cur.fetchall()
-        
+
         cur.close()
         conn.close()
-        
+
         if not rows:
             return {
                 'answer': f"I couldn't find any emails from '{sender}'.",
@@ -411,7 +417,7 @@ Sender name only:"""
                 'confidence': 'none',
                 'query_type': 'search-by-sender'
             }
-        
+
         # Convert to MailMessage objects
         from ..models.message import MailMessage
         emails = [
@@ -434,11 +440,11 @@ Sender name only:"""
             )
             for r in rows
         ]
-        
+
         # Build context and generate answer
         context = self.context_builder.build_context_from_messages(emails)
         answer = self._generate_answer_temporal(question, context, emails)
-        
+
         sources = [
             {
                 'message_id': msg.id,
@@ -450,7 +456,7 @@ Sender name only:"""
             }
             for msg in emails
         ]
-        
+
         return {
             'answer': answer,
             'sources': sources,
@@ -458,23 +464,23 @@ Sender name only:"""
             'confidence': 'high',
             'query_type': 'search-by-sender'
         }
-    
+
     def _handle_search_by_attachment(self, question: str, limit: int) -> Dict:
         """Handle search for emails with attachments.
-        
+
         Args:
             question: User's question
             limit: Maximum number of emails to return
-            
+
         Returns:
             Query result with emails that have attachments
         """
         print(f"[SEARCH BY ATTACHMENT] Processing attachment search")
-        
+
         from psycopg2.extras import RealDictCursor
         conn = self.storage.connect()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         sql = """
             SELECT m.*,
                    c.labels as class_labels,
@@ -486,13 +492,13 @@ Sender name only:"""
             ORDER BY m.internal_date DESC
             LIMIT %s
         """
-        
+
         cur.execute(sql, (limit,))
         rows = cur.fetchall()
-        
+
         cur.close()
         conn.close()
-        
+
         if not rows:
             return {
                 'answer': "I couldn't find any emails with attachments.",
@@ -501,7 +507,7 @@ Sender name only:"""
                 'confidence': 'none',
                 'query_type': 'search-by-attachment'
             }
-        
+
         # Convert to MailMessage objects
         from ..models.message import MailMessage
         emails = [
@@ -524,11 +530,11 @@ Sender name only:"""
             )
             for r in rows
         ]
-        
+
         # Build context and generate answer
         context = self.context_builder.build_context_from_messages(emails)
         answer = self._generate_answer_temporal(question, context, emails)
-        
+
         sources = [
             {
                 'message_id': msg.id,
@@ -540,7 +546,7 @@ Sender name only:"""
             }
             for msg in emails
         ]
-        
+
         return {
             'answer': answer,
             'sources': sources,
@@ -548,27 +554,27 @@ Sender name only:"""
             'confidence': 'high',
             'query_type': 'search-by-attachment'
         }
-    
+
     def _handle_classification_query(self, question: str, limit: int) -> Dict:
         """Handle classification-based queries using label filtering.
-        
+
         Args:
             question: User's question
             limit: Maximum number of emails to include in context
-            
+
         Returns:
             Query result with answer and sources
         """
         # Get the matched label from the query
         matched_label = get_label_from_query(question)
-        
+
         if not matched_label:
             # Fallback to semantic if we can't determine the label
             return self._handle_semantic_query(question, limit, 0.5)
-        
+
         # Get all emails with this label (up to a reasonable limit for context)
         emails, total_count = self.storage.list_messages_by_label(matched_label, limit=limit, offset=0)
-        
+
         if not emails:
             return {
                 'answer': f"I couldn't find any emails with the label '{matched_label}' in the database.",
@@ -577,13 +583,13 @@ Sender name only:"""
                 'confidence': 'none',
                 'query_type': 'classification'
             }
-        
+
         # Build context from labeled emails
         context = self.context_builder.build_context_from_messages(emails)
-        
+
         # Generate answer using LLM with classification context
         answer = self._generate_answer_classification(question, context, emails, total_count, matched_label)
-        
+
         # Format sources
         sources = [
             {
@@ -596,7 +602,7 @@ Sender name only:"""
             }
             for msg in emails
         ]
-        
+
         return {
             'answer': answer,
             'sources': sources,
@@ -605,19 +611,19 @@ Sender name only:"""
             'query_type': 'classification',
             'total_count': total_count
         }
-    
+
     def _handle_filtered_temporal_query(self, question: str, limit: int) -> Dict:
         """Handle temporal queries with content filtering using LLM to extract filters.
-        
+
         Args:
             question: User's question
             limit: Maximum number of emails to retrieve
-            
+
         Returns:
             Query result with answer and sources
         """
         print(f"[FILTERED TEMPORAL] Processing query with content + temporal filtering")
-        
+
         # Use LLM to extract search terms from the question
         extraction_prompt = f"""Extract the key search terms from this email query. Return ONLY the keywords/phrases, nothing else.
 
@@ -626,7 +632,7 @@ User question: "{question}"
 Return 1-3 keywords separated by commas. Examples: "uber eats" or "amazon, delivery" or "linkedin"
 
 Keywords:"""
-        
+
         try:
             keywords_str = self._call_llm_simple(extraction_prompt).strip()
             # Clean up the response - remove common prefixes and parse
@@ -650,29 +656,29 @@ Keywords:"""
             common_words = {'the', 'my', 'me', 'show', 'get', 'find', 'what', 'are', 'is', 'from', 'about', 'recent', 'latest', 'last', 'most', 'five', 'ten', 'emails', 'messages', 'mails'}
             keywords = [word for word in question_lower.split() if word not in common_words and len(word) > 3]
             print(f"[FILTERED TEMPORAL] Fallback keywords: {keywords}")
-        
+
         if not keywords:
             # No keywords found, fall back to pure temporal
             print(f"[FILTERED TEMPORAL] No keywords found, falling back to temporal")
             return self._handle_temporal_query(question, limit)
-        
+
         # Query database with keyword filtering AND date sorting
         from psycopg2.extras import RealDictCursor
         conn = self.storage.connect()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         # Build WHERE clause for keyword matching
         where_clauses = []
         params = []
         for keyword in keywords:
             where_clauses.append("(subject ILIKE %s OR from_addr ILIKE %s OR snippet ILIKE %s)")
             params.extend([f'%{keyword}%', f'%{keyword}%', f'%{keyword}%'])
-        
+
         # Combine with OR and order by date
         sql = f"""
-            SELECT m.*, 
-                   c.labels as class_labels, 
-                   c.priority as class_priority, 
+            SELECT m.*,
+                   c.labels as class_labels,
+                   c.priority as class_priority,
                    c.summary as class_summary
             FROM messages m
             LEFT JOIN classifications c ON m.latest_classification_id = c.id
@@ -681,14 +687,14 @@ Keywords:"""
             LIMIT %s
         """
         params.append(limit)
-        
+
         print(f"[FILTERED TEMPORAL] Executing SQL query with {len(keywords)} keyword(s)")
         cur.execute(sql, params)
         rows = cur.fetchall()
-        
+
         cur.close()
         conn.close()
-        
+
         if not rows:
             print(f"[FILTERED TEMPORAL] No emails found matching keywords")
             return {
@@ -698,9 +704,9 @@ Keywords:"""
                 'confidence': 'none',
                 'query_type': 'filtered-temporal'
             }
-        
+
         print(f"[FILTERED TEMPORAL] Found {len(rows)} matching emails")
-        
+
         # Convert to MailMessage objects
         from ..models.message import MailMessage
         emails = []
@@ -724,13 +730,13 @@ Keywords:"""
                     has_attachments=r['has_attachments'] or False,
                 )
             )
-        
+
         # Build context from filtered emails
         context = self.context_builder.build_context_from_messages(emails)
-        
+
         # Generate answer using LLM
         answer = self._generate_answer_temporal(question, context, emails)
-        
+
         # Format sources
         sources = [
             {
@@ -743,9 +749,9 @@ Keywords:"""
             }
             for msg in emails
         ]
-        
+
         print(f"[FILTERED TEMPORAL] Query completed successfully")
-        
+
         return {
             'answer': answer,
             'sources': sources,
@@ -753,20 +759,20 @@ Keywords:"""
             'confidence': 'high',
             'query_type': 'filtered-temporal'
         }
-    
+
     def _handle_temporal_query(self, question: str, limit: int) -> Dict:
         """Handle pure temporal queries without content filtering using direct database queries.
-        
+
         Args:
             question: User's question
             limit: Maximum number of emails to retrieve
-            
+
         Returns:
             Query result with answer and sources
         """
         # Get recent emails directly from database (sorted by date)
         recent_emails = self.storage.list_messages(limit=limit, offset=0)
-        
+
         if not recent_emails:
             return {
                 'answer': "I couldn't find any emails in the database.",
@@ -775,13 +781,13 @@ Keywords:"""
                 'confidence': 'none',
                 'query_type': 'temporal'
             }
-        
+
         # Build context from recent emails
         context = self.context_builder.build_context_from_messages(recent_emails)
-        
+
         # Generate answer using LLM with temporal context
         answer = self._generate_answer_temporal(question, context, recent_emails)
-        
+
         # Format sources
         sources = [
             {
@@ -794,7 +800,7 @@ Keywords:"""
             }
             for msg in recent_emails
         ]
-        
+
         return {
             'answer': answer,
             'sources': sources,
@@ -802,24 +808,24 @@ Keywords:"""
             'confidence': 'high',
             'query_type': 'temporal'
         }
-    
+
     def _handle_semantic_query(self, question: str, limit: int, threshold: float) -> Dict:
         """Handle content-based queries using semantic search.
-        
+
         Args:
             question: User's question
             limit: Maximum number of emails to retrieve
             threshold: Minimum similarity threshold
-            
+
         Returns:
             Query result with answer and sources
         """
         print(f"[SEMANTIC QUERY] Processing semantic query")
-        
+
         # Check if this is a counting query - if so, search more emails
         question_lower = question.lower()
         is_counting_query = any(word in question_lower for word in ['how many', 'count', 'number of'])
-        
+
         if is_counting_query:
             # For counting queries, search more emails and use lower threshold
             original_limit = limit
@@ -827,7 +833,7 @@ Keywords:"""
             limit = max(limit, 50)  # Search at least 50 emails
             threshold = min(threshold, 0.25)  # Lower threshold to 0.25 or less
             print(f"[SEMANTIC QUERY] Counting query detected - increased limit from {original_limit} to {limit}, lowered threshold from {original_threshold} to {threshold}")
-        
+
         # Step 1: Embed the question
         print(f"[SEMANTIC QUERY] Step 1: Generating embedding for question")
         try:
@@ -1029,17 +1035,17 @@ YOUR TASK:
 Analyzing the emails above:"""
 
         return self._call_llm(prompt)
-    
+
     def _generate_answer_classification(self, question: str, context: str, messages: List, total_count: int, label: str) -> str:
         """Generate answer for classification queries using LLM.
-        
+
         Args:
             question: User's question
             context: Context built from labeled emails
             messages: List of messages shown in context
             total_count: Total number of emails with this label
             label: The classification label being queried
-            
+
         Returns:
             LLM-generated answer
         """
@@ -1065,15 +1071,15 @@ I am providing you with {len(messages)} sample emails (limited for context) from
 Based on the classification data, there are {total_count} emails labeled as "{label}". Here is the detailed answer:"""
 
         return self._call_llm(prompt)
-    
+
     def _generate_answer_temporal(self, question: str, context: str, messages: List) -> str:
         """Generate answer for temporal queries using LLM.
-        
+
         Args:
             question: User's question
             context: Context built from recent emails
             messages: List of messages
-            
+
         Returns:
             LLM-generated answer
         """
@@ -1097,96 +1103,52 @@ IMPORTANT: You have full access to these emails - they are real emails from the 
 Based on the emails above, here is the answer:"""
 
         return self._call_llm(prompt)
-    
+
     def _call_llm_simple(self, prompt: str) -> str:
         """Call the LLM with a simple prompt for quick classification/extraction tasks.
-        
-        This is optimized for fast, short responses (no debugging output).
-        
+
+        This is optimized for fast, short responses.
+
         Args:
             prompt: The prompt to send to the LLM
-            
+
         Returns:
             The LLM's response
         """
-        # Check if using Ollama (best for RAG)
-        if self.llm.provider == "ollama":
-            import urllib.request
-            import os
+        # Use LangChain if available
+        if self.llm.llm:
+            logger.debug(f"[LLM SIMPLE] Using LangChain with {self.llm.provider}/{self.llm.model}")
+            messages = [
+                SystemMessage(content="You are a helpful assistant that provides concise answers."),
+                HumanMessage(content=prompt)
+            ]
+            response = self.llm.llm.invoke(messages)
+            return response.content.strip()
 
-            host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-            payload = {
-                "model": self.llm.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.3,  # Lower temp for more deterministic results
-                    "num_predict": 50,   # Short responses only
-                }
-            }
+        # Fallback to direct API calls for command/rules providers
+        logger.debug(f"[LLM SIMPLE] Using direct API for {self.llm.provider}")
+        return self.llm.invoke(prompt)
 
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                f"{host}/api/generate",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-
-            with urllib.request.urlopen(req, timeout=30) as response:
-                result = json.load(response)
-                return result.get("response", "").strip()
-
-        elif self.llm.provider == "openai":
-            import openai
-            import os
-
-            client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-            response = client.chat.completions.create(
-                model=self.llm.model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that provides concise answers."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=50,
-            )
-            return response.choices[0].message.content.strip()
-
-        elif self.llm.provider == "anthropic":
-            import anthropic
-            import os
-
-            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            message = client.messages.create(
-                model=self.llm.model,
-                max_tokens=50,
-                temperature=0.3,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            return message.content[0].text.strip()
-
-        else:
-            raise ValueError(f"Unsupported provider for quick LLM calls: {self.llm.provider}")
-    
     def _call_llm(self, prompt: str) -> str:
-        """Call the LLM with the given prompt.
-        
+        """Call the LLM with the given prompt using LangChain.
+
         Args:
             prompt: The prompt to send to the LLM
-            
+
         Returns:
             The LLM's response
         """
-        print(f"[LLM CALL] Calling LLM with provider: {self.llm.provider}, model: {self.llm.model}")
-        print(f"[LLM CALL] Prompt length: {len(prompt)} characters")
-        print(f"[LLM CALL] Prompt preview: {prompt[:300]}...")
-        print(f"[LLM CALL] Full prompt for debugging:")
-        print("-" * 60)
-        print(prompt)
-        print("-" * 60)
+        logger.info(f"[LLM CALL] Calling LLM with provider: {self.llm.provider}, model: {self.llm.model}")
+        logger.debug(f"[LLM CALL] Prompt length: {len(prompt)} characters")
+
+        if self.llm.llm:
+            # Use LangChain
+            messages = [HumanMessage(content=prompt)]
+            response = self.llm.llm.invoke(messages)
+            return response.content.strip()
+        else:
+            # Fallback for command/rules providers
+            return self.llm.invoke(prompt)
 
         # Check if using Ollama (best for RAG)
         if self.llm.provider == "ollama":

@@ -46,18 +46,18 @@ class EmbeddingService:
         print(f"[EMBEDDING SERVICE] Model: {self.model_name}")
         print(f"[EMBEDDING SERVICE] Input text length: {len(text)} chars")
         print(f"[EMBEDDING SERVICE] Input text preview: {text[:100]}...")
-        
+
         # Truncate to max tokens to avoid model errors
         original_length = len(text)
         text = self._truncate_text(text, self.MAX_TOKENS)
         if len(text) != original_length:
             print(f"[EMBEDDING SERVICE] Text truncated from {original_length} to {len(text)} chars")
-        
+
         try:
             # Generate embedding
             print(f"[EMBEDDING SERVICE] Generating embedding with {self.model_name}...")
             embedding = self.model.encode(text, convert_to_numpy=True)
-            
+
             # Convert to list for JSON serialization
             result = embedding.tolist()
             print(f"[EMBEDDING SERVICE] ✓ Embedding generated successfully")
