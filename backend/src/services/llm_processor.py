@@ -22,7 +22,7 @@ import shlex
 import subprocess
 import urllib.request
 import urllib.error
-from .classification_labels import ALLOWED_LABELS
+from ..classification_labels import ALLOWED_LABELS
 from .llm_prompts import CLASSIFICATION_SYSTEM_MESSAGE, build_classification_prompt
 
 
@@ -100,12 +100,29 @@ class LLMProcessor:
 
         Example return: {"labels": ["finance", "important"], "priority": "high", "summary": "Invoice payment reminder"}
         """
+        print(f"[LLM PROCESSOR] Starting categorization")
+        print(f"[LLM PROCESSOR] Provider: {self.provider}")
+        print(f"[LLM PROCESSOR] Model: {self.model}")
+        print(f"[LLM PROCESSOR] Subject: '{subject[:50]}...'")
+        print(f"[LLM PROCESSOR] Body length: {len(body)} chars")
+        print(f"[LLM PROCESSOR] Body preview: {body[:100]}...")
+        
         # Use rule-based for rules provider
         if self.provider == "rules":
-            return self._rule_based(subject, body)
+            print(f"[LLM PROCESSOR] Using rule-based classification")
+            result = self._rule_based(subject, body)
+            print(f"[LLM PROCESSOR] Rule-based result: {result}")
+            return result
 
         # For non-rules providers, don't fall back - let the error propagate
-        return self._categorize_with_llm(subject, body)
+        print(f"[LLM PROCESSOR] Using LLM-based classification")
+        try:
+            result = self._categorize_with_llm(subject, body)
+            print(f"[LLM PROCESSOR] ✓ LLM classification successful: {result}")
+            return result
+        except Exception as e:
+            print(f"[LLM PROCESSOR] ✗ LLM classification failed: {e}")
+            raise
 
     def _categorize_with_llm(self, subject: str, body: str) -> Dict:
         """Common LLM categorization flow: build prompt → call provider → parse response."""
