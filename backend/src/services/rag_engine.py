@@ -196,6 +196,18 @@ class RAGQueryEngine:
             if any(word in question_lower for word in ['hello', 'hi', 'thanks', 'thank you', 'help', 'what can you']):
                 return 'conversation'
 
+            # Check for counting queries first
+            if 'how many' in question_lower or 'count' in question_lower or 'number of' in question_lower:
+                # If it's asking "how many [specific thing]", it's aggregation
+                # Check if it has a specific topic (not just "how many total")
+                has_specific_topic = any(word in question_lower for word in [
+                    'uber', 'amazon', 'linkedin', 'google', 'github', 'facebook', 
+                    'twitter', 'netflix', 'spotify', 'apple', 'microsoft'
+                ]) or '@' in question_lower  # email addresses
+                
+                if has_specific_topic or 'total' not in question_lower:
+                    return 'aggregation'
+
             has_temporal = any(word in question_lower for word in ['recent', 'latest', 'last', 'newest', 'first', 'oldest'])
             has_content_filter = any(word in question_lower for word in ['from', 'about', 'uber', 'amazon', 'linkedin'])
 
@@ -268,6 +280,131 @@ Just ask me anything about your emails!"""
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         question_lower = question.lower()
+        
+        # Check if this is a "how many [topic]" query
+        if 'how many' in question_lower and not any(word in question_lower for word in ['total', 'per day', 'unread']):
+            # Extract the topic/sender
+            extraction_prompt = f"""You are extracting a company or sender name from a user's question. Extract ONLY the company/sender name.
+
+User's question: "{question}"
+
+Instructions:
+- Look at the question and identify the company, service, or sender name mentioned
+- Return ONLY that name, nothing else
+- Do not say "not provided" or similar - extract what IS in the question
+
+Examples:
+Question: "how many uber eats emails do I have" → Answer: uber eats
+Question: "how many amazon mails" → Answer: amazon  
+Question: "count my linkedin messages" → Answer: linkedin
+Question: "how many github emails" → Answer: github
+
+Now extract from the user's question above. Return ONLY the company/sender name:"""
+            
+            try:
+                topic = self._call_llm_simple(extraction_prompt).strip()
+                print(f"[AGGREGATION] Raw LLM response: '{topic}'")
+                
+                # Clean up verbose LLM responses
+                topic_lower = topic.lower()
+                
+                # Remove common verbose prefixes
+                for phrase in [
+                    'sure, here\'s the topic/sender from the counting query:',
+                    'here\'s the topic/sender:',
+                    'the topic/sender is',
+                    'topic/sender:',
+                    'the topic is',
+                    'topic is',
+                    'sender is',
+                    'the sender is',
+                    'your answer (company name only):',
+                    'company name only:',
+                    'topic:',
+                    'sender:',
+                    'keywords:',
+                    'sure,',
+                    'here',
+                ]:
+                    if topic_lower.startswith(phrase):
+                        topic = topic[len(phrase):].strip()
+                        topic_lower = topic.lower()
+                
+                # Remove markdown formatting (bold, italic, etc)
+                topic = topic.replace('**', '').replace('*', '').replace('__', '').replace('_', '')
+                
+                # Remove quotes and punctuation
+                topic = topic.strip('"').strip("'").strip('.').strip(',').strip(':').strip()
+                
+                # If topic still contains "topic:" or similar after all this, try to extract just the value
+                if ':' in topic and len(topic.split(':')) == 2:
+                    _, value = topic.split(':', 1)
+                    topic = value.strip()
+                
+                # Handle multi-part responses like "topic: uber eats" or similar
+                # Look for the actual company name by checking for known patterns
+                words = topic.split()
+                if len(words) > 3:
+                    # If we have more than 3 words, try to find the actual company name
+                    # Skip common filler words
+                    filtered_words = [w for w in words if w.lower() not in 
+                                    ['the', 'a', 'an', 'is', 'are', 'was', 'were', 'topic', 'sender', 
+                                     'query', 'counting', 'email', 'emails', 'message', 'messages', 
+                                     'mail', 'mails', 'from', 'to', 'about']]
+                    if filtered_words:
+                        # Take up to 3 filtered words (e.g., "uber eats" or "amazon")
+                        topic = ' '.join(filtered_words[:3])
+                
+                topic = topic.strip()
+                print(f"[AGGREGATION] Cleaned topic: '{topic}'")
+                
+                # Validate we got something reasonable
+                if len(topic) < 2 or len(topic) > 50:
+                    raise ValueError(f"Invalid topic length: {len(topic)}")
+                
+                # Additional validation: if the topic still contains nonsense, try simple keyword extraction
+                if any(word in topic.lower() for word in ['not provided', 'cannot', 'company/sender', 'context']):
+                    print(f"[AGGREGATION] LLM extraction failed, using keyword fallback")
+                    # Simple fallback: extract keywords from question
+                    words = question_lower.split()
+                    # Remove common words
+                    stop_words = {'how', 'many', 'do', 'i', 'have', 'mail', 'mails', 'email', 'emails', 
+                                'message', 'messages', 'my', 'the', 'from', 'a', 'an', 'count'}
+                    keywords = [w for w in words if w not in stop_words and len(w) > 2]
+                    if keywords:
+                        # Take first 2-3 keywords as the topic (e.g., "uber eats")
+                        topic = ' '.join(keywords[:3])
+                        print(f"[AGGREGATION] Fallback extracted topic: '{topic}'")
+                    else:
+                        raise ValueError("Could not extract topic from query")
+                
+                # Query database with topic filter
+                sql = """
+                    SELECT COUNT(*) as count
+                    FROM messages
+                    WHERE subject ILIKE %s OR from_addr ILIKE %s OR snippet ILIKE %s
+                """
+                params = (f'%{topic}%', f'%{topic}%', f'%{topic}%')
+                print(f"[AGGREGATION] SQL query params: {params}")
+                cur.execute(sql, params)
+                count = cur.fetchone()['count']
+                
+                print(f"[AGGREGATION] Found {count} emails matching '{topic}'")
+                
+                cur.close()
+                conn.close()
+                
+                answer = f"You have {count} emails related to '{topic}'."
+                return {
+                    'answer': answer,
+                    'sources': [],
+                    'question': question,
+                    'confidence': 'high',
+                    'query_type': 'aggregation'
+                }
+            except Exception as e:
+                print(f"[AGGREGATION] Failed to extract topic: {e}, falling back to standard aggregation")
+                # Fall through to standard aggregation handling
 
         # Determine what stats to calculate
         if 'per day' in question_lower or 'daily' in question_lower:
@@ -361,20 +498,37 @@ Just ask me anything about your emails!"""
         print(f"[SEARCH BY SENDER] Processing sender search")
 
         # Use LLM to extract sender
-        extraction_prompt = f"""Extract sender from: "{question}"
+        extraction_prompt = f"""Extract the sender name or email address from this query. Return ONLY the sender name/email, nothing else.
+
+Query: "{question}"
 
 Examples:
 - "emails from uber" → uber
 - "all from amazon" → amazon
 - "linkedin messages" → linkedin
 - "john@company.com emails" → john@company.com
+- "show me uber eats emails" → uber eats
+- "all my google mail" → google
 
-Sender name only:"""
+Important:
+- Return the sender name EXACTLY as mentioned
+- If it's a company with multiple words (like "uber eats"), return both words
+- Do NOT return other words from the query like "the", "my", "show", etc.
+- Return ONLY the sender name
+
+Sender:"""
 
         try:
             response = self._call_llm_simple(extraction_prompt).strip()
-            # Clean up - take first word/token only
-            sender = response.split()[0].strip().strip('"').strip("'").strip('.').strip(',')
+            # Clean up - remove quotes and common prefixes
+            sender = response.strip('"').strip("'").strip('.').strip(',')
+            # Remove common prefixes that might leak in
+            for prefix in ['the sender is', 'sender:', 'sender is', 'the']:
+                if sender.lower().startswith(prefix):
+                    sender = sender[len(prefix):].strip()
+            # Validate we got something reasonable (not just "the" or similar)
+            if len(sender) < 2 or sender.lower() in ['the', 'a', 'an', 'my', 'show', 'all']:
+                raise ValueError(f"Invalid sender extracted: '{sender}'")
             print(f"[SEARCH BY SENDER] Extracted sender: {sender}")
         except Exception as e:
             print(f"[SEARCH BY SENDER] Failed to extract sender: {e}")

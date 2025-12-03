@@ -67,8 +67,8 @@ QUERY_CLASSIFICATION_PROMPT = """Classify this email query in ONE word:
 
 Query types:
 - conversation: greetings, thanks, help requests (hi, hello, thank you, what can you do)
-- aggregation: statistics, counting, top senders (how many total, who emails most, count of)
-- search-by-sender: find all from specific sender without time constraint (all from X, emails from Y)
+- aggregation: statistics, counting, top senders (how many total, who emails most, count of, how many [topic])
+- search-by-sender: find all from specific sender without time constraint (all from X, emails from Y, show me X's emails)
 - search-by-attachment: find emails with attachments (with attachments, has files)
 - classification: label-based queries (job rejections, spam emails, receipts)
 - filtered-temporal: time + topic/sender (recent uber emails, latest from amazon, last week's newsletters)
@@ -76,9 +76,10 @@ Query types:
 - semantic: content search without time constraint (about project alpha, regarding meeting)
 
 Rules:
+- If asks "how many" with a specific topic/sender (e.g., "how many uber emails") → aggregation
 - If has BOTH time word (recent/latest/last) AND topic/sender → filtered-temporal
 - If asks "how many total" or "who emails most" → aggregation
-- If "all from X" without time → search-by-sender
+- If "all from [sender]" or "show me [sender] emails" without counting → search-by-sender
 - If greeting/thanks → conversation
 - If time word but no topic → temporal
 - Otherwise → semantic
