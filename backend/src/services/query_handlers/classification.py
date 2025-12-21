@@ -101,7 +101,7 @@ class ClassificationHandler(QueryHandler):
         """
         # Format chat history for context
         history_context = self._format_chat_history(chat_history) if chat_history else ""
-        
+
         # Use LLM to extract the classification topic from history
         extraction_prompt = CLASSIFICATION_HISTORY_EXTRACTION_PROMPT.format(
             history_context=history_context
@@ -109,19 +109,19 @@ class ClassificationHandler(QueryHandler):
 
         try:
             extracted_label = self._call_llm_simple(extraction_prompt).strip().lower()
-            
+
             # Clean up the response
             if extracted_label == "none" or len(extracted_label) < 2:
                 return None
-                
+
             # Map common variations to exact labels using existing system
             from ...classification_labels import QUERY_TO_LABEL_MAPPING
-            
+
             # Apply mapping if available
             final_label = QUERY_TO_LABEL_MAPPING.get(extracted_label, extracted_label)
             logger.info(f"[CLASSIFICATION] LLM extracted '{extracted_label}' -> mapped to '{final_label}'")
             return final_label
-            
+
         except Exception as e:
             logger.debug(f"[CLASSIFICATION] Failed to extract label from history: {e}")
             return None

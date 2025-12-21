@@ -114,7 +114,8 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
       const res = await fetch('/models');
       if (res.ok) {
         const data = await res.json();
-        setModels(data.models || []);
+        const fetchedModels = data.models || [];
+        setModels(fetchedModels);
         setOllamaError(null);
       } else if (res.status === 503) {
         const data = await res.json();

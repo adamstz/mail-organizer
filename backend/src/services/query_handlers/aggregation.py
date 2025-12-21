@@ -237,7 +237,7 @@ class AggregationHandler(QueryHandler):
         has_context_reference = any(phrase in question_lower for phrase in [
             'out of', 'from those', 'of them', 'of the', 'among', 'from the'
         ])
-        
+
         # If it's a simple question without explicit topic/sender details, try to use history
         is_simple_followup = (
             len(question.split()) <= 5 and  # Short question

@@ -162,11 +162,11 @@ class SemanticHandler(QueryHandler):
         """Generate answer using LLM with email context."""
         # Format chat history for context
         history_context = self._format_chat_history(chat_history) if chat_history else ""
-        
+
         # Create enhanced prompt with chat history
         enhanced_prompt = SEMANTIC_SEARCH_PROMPT.format(
             context=context,
             question=question,
         ) + history_context
-        
+
         return self._call_llm(enhanced_prompt)

@@ -172,25 +172,25 @@ class TemporalHandler(QueryHandler):
         """Generate answer for pure temporal queries."""
         # Format chat history for context
         history_context = self._format_chat_history(chat_history) if chat_history else ""
-        
+
         # Create enhanced prompt with chat history
         enhanced_prompt = TEMPORAL_QUERY_PROMPT.format(
             context=context,
             question=question,
         ) + history_context
-        
+
         return self._call_llm(enhanced_prompt)
 
     def _generate_filtered_answer(self, question: str, context: str, keywords: List[str], chat_history: Optional[list] = None) -> str:
         """Generate answer for filtered-temporal queries."""
         # Format chat history for context
         history_context = self._format_chat_history(chat_history) if chat_history else ""
-        
+
         # Create enhanced prompt with chat history
         enhanced_prompt = FILTERED_TEMPORAL_PROMPT.format(
             keywords=', '.join(keywords),
             context=context,
             question=question,
         ) + history_context
-        
+
         return self._call_llm(enhanced_prompt)

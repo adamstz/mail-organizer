@@ -768,7 +768,7 @@ async def get_current_model() -> dict:
     """Get the currently active LLM model."""
     import os
 
-    current_model = os.getenv("LLM_MODEL", "gemma:2b")
+    current_model = os.getenv("LLM_MODEL", "")
     provider = os.getenv("LLM_PROVIDER", "ollama")
 
     return {

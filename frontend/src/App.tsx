@@ -32,28 +32,59 @@ const App: React.FC = () => {
   });
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOrder, setSortOrder] = useState<'recent' | 'oldest'>('recent');
-  const [selectedModel, setSelectedModel] = useState<string>('qwen2.5:7b');
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [isChatVisible, setIsChatVisible] = useState(true);
   const [isLogsVisible, setIsLogsVisible] = useState(false);
   const [chatWidth, setChatWidth] = useState(41.67); // Default ~5/12 columns in percentage
   const [isDragging, setIsDragging] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Fetch current model on mount
+  // Fetch available models and auto-select first one on mount
   useEffect(() => {
-    const fetchCurrentModel = async () => {
+    const fetchAndSelectModel = async () => {
       try {
-        const response = await fetch('/api/current-model');
-        if (response.ok) {
-          const data = await response.json();
-          setSelectedModel(data.model);
+        console.log('[App] Fetching current model...');
+        // First try to get current model from backend
+        const currentModelRes = await fetch('/api/current-model');
+        if (currentModelRes.ok) {
+          const data = await currentModelRes.json();
+          console.log('[App] Current model from backend:', data);
+          if (data.model && data.model.trim() !== '') {
+            console.log('[App] Setting model from backend:', data.model);
+            setSelectedModel(data.model);
+            return;
+          }
+        }
+        
+        console.log('[App] No current model, fetching available models...');
+        // If no current model set, fetch available models and select first
+        const modelsRes = await fetch('/models');
+        if (modelsRes.ok) {
+          const modelsData = await modelsRes.json();
+          console.log('[App] Available models:', modelsData);
+          if (modelsData.models && modelsData.models.length > 0) {
+            const firstModel = modelsData.models[0].name;
+            console.log('[App] Auto-selecting first model:', firstModel);
+            setSelectedModel(firstModel);
+            // Also set it on the backend
+            const setModelRes = await fetch('/api/set-model', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: firstModel }),
+            });
+            console.log('[App] Set model response:', setModelRes.ok);
+          }
         }
       } catch (error) {
-        console.error('Failed to fetch current model:', error);
+        console.error('[App] Failed to fetch and select model:', error);
       }
     };
-    fetchCurrentModel();
+    fetchAndSelectModel();
   }, []);
+
+  const handleModelChange = (model: string) => {
+    setSelectedModel(model);
+  };
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -211,7 +242,7 @@ const App: React.FC = () => {
               onLabelFilter={handleLabelFilter}
               onPriorityFilter={handlePriorityFilter}
               selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
+              onModelChange={handleModelChange}
             />
 
             <EmailList

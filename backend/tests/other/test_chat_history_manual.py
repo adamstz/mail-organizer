@@ -2,10 +2,17 @@
 """
 Manual test script for chat history functionality.
 Tests the actual implementation with real LLM calls.
+
+This is a manual test script - not meant to be run by pytest.
+Run directly with: python tests/other/test_chat_history_manual.py
 """
+import pytest
 import sys
 import os
 import logging
+
+# Skip this file when running pytest
+pytestmark = pytest.mark.skip(reason="Manual test script - run directly, not via pytest")
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))

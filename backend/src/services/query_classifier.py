@@ -198,10 +198,10 @@ class QueryClassifier:
 
         # This is a contextual follow-up if:
         # 1. It has explicit contextual references, OR
-        # 2. It's a simple follow-up with pronouns, OR  
+        # 2. It's a simple follow-up with pronouns, OR
         # 3. It's an ambiguous continuation with numbers and we have history
         return (
-            has_contextual_reference or 
+            has_contextual_reference or
             (is_simple_followup and has_pronouns) or
             (is_ambiguous_continuation and has_history)
         ) and has_history

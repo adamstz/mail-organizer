@@ -32,13 +32,8 @@ class TestChatHistoryPrompts:
             {"role": "assistant", "content": "You have 97 promotional emails"},
         ]
         
-        # Mock LLM response for extraction
-        mock_response = Mock()
-        mock_response.content = "promotional"
-        self.mock_llm.invoke.return_value = mock_response
-        
-        # Mock the handler's _call_llm method
-        with patch.object(self.handler, '_call_llm', return_value="promotional") as mock_call:
+        # Mock LLM response for extraction - use _call_llm_simple
+        with patch.object(self.handler, '_call_llm_simple', return_value="promotional"):
             # Mock _format_chat_history method
             self.handler._format_chat_history = Mock(return_value="User: how many promotional emails do I have\nAssistant: You have 97 promotional emails")
             
@@ -54,18 +49,13 @@ class TestChatHistoryPrompts:
             {"role": "assistant", "content": "I found 15 job applications"},
         ]
         
-        # Mock LLM response
-        mock_response = Mock()
-        mock_response.content = "job"
-        self.mock_llm.invoke.return_value = mock_response
-        
-        with patch.object(self.handler, '_call_llm', return_value="job") as mock_call:
-            self.handler._format_chat_history.return_value = "User: show me job applications\nAssistant: I found 15 job applications"
+        with patch.object(self.handler, '_call_llm_simple', return_value="job"):
+            self.handler._format_chat_history = Mock(return_value="User: show me job applications\nAssistant: I found 15 job applications")
             
             result = self.handler._extract_label_from_history(chat_history)
             
-            # Should map to job-rejection via QUERY_TO_LABEL_MAPPING
-            assert result == "job-rejection", f"Expected 'job-rejection', got '{result}'"
+            # Should map to job-application via QUERY_TO_LABEL_MAPPING
+            assert result == "job-application", f"Expected 'job-application', got '{result}'"
 
     def test_classification_history_extraction_multiple_topics(self):
         """Test multiple topics in history."""
@@ -76,12 +66,8 @@ class TestChatHistoryPrompts:
             {"role": "assistant", "content": "23 spam emails"},
         ]
         
-        mock_response = Mock()
-        mock_response.content = "receipt"
-        self.mock_llm.invoke.return_value = mock_response
-        
-        with patch.object(self.handler, '_call_llm', return_value="receipt") as mock_call:
-            self.handler._format_chat_history.return_value = "User: how many receipts?\nAssistant: 5 receipts\nUser: count spam emails\nAssistant: 23 spam emails"
+        with patch.object(self.handler, '_call_llm_simple', return_value="receipt"):
+            self.handler._format_chat_history = Mock(return_value="User: how many receipts?\nAssistant: 5 receipts\nUser: count spam emails\nAssistant: 23 spam emails")
             
             result = self.handler._extract_label_from_history(chat_history)
             
@@ -95,12 +81,8 @@ class TestChatHistoryPrompts:
             {"role": "user", "content": "from those, what do you mean?"},
         ]
         
-        mock_response = Mock()
-        mock_response.content = "none"
-        self.mock_llm.invoke.return_value = mock_response
-        
-        with patch.object(self.handler, '_call_llm', return_value="none") as mock_call:
-            self.handler._format_chat_history.return_value = "User: hello\nAssistant: Hi! How can I help you?\nUser: from those, what do you mean?"
+        with patch.object(self.handler, '_call_llm_simple', return_value="none"):
+            self.handler._format_chat_history = Mock(return_value="User: hello\nAssistant: Hi! How can I help you?\nUser: from those, what do you mean?")
             
             result = self.handler._extract_label_from_history(chat_history)
             
@@ -139,43 +121,26 @@ class TestChatHistoryPrompts:
         mock_formatter = Mock(return_value="Formatted history")
         self.handler._format_chat_history = mock_formatter
         
-        # Mock LLM response
-        mock_response = Mock()
-        mock_response.content = "test"
-        self.mock_llm.invoke.return_value = mock_response
-        
-        with patch.object(self.handler, '_call_llm', return_value="test") as mock_call:
+        with patch.object(self.handler, '_call_llm_simple', return_value="test"):
             self.handler._extract_label_from_history(chat_history)
             
             # Verify _format_chat_history was called with chat_history
             mock_formatter.assert_called_once_with(chat_history)
 
-    @patch('src.services.query_handlers.classification.QUERY_TO_LABEL_MAPPING')
-    def test_classification_history_mapping_integration(self, mock_mapping):
+    def test_classification_history_mapping_integration(self):
         """Test integration with QUERY_TO_LABEL_MAPPING."""
         chat_history = [
             {"role": "user", "content": "how many promo emails?"},
             {"role": "assistant", "content": "5 promo emails"},
         ]
         
-        # Set up mock mapping
-        mock_mapping.get.side_effect = lambda key: {
-            "promo": "promotions",
-            "test": "test"
-        }.get(key, key)
-        
-        mock_response = Mock()
-        mock_response.content = "promo"
-        self.mock_llm.invoke.return_value = mock_response
-        
-        with patch.object(self.handler, '_call_llm', return_value="promo") as mock_call:
-            self.handler._format_chat_history.return_value = "Formatted history"
+        with patch.object(self.handler, '_call_llm_simple', return_value="promotional"):
+            self.handler._format_chat_history = Mock(return_value="Formatted history")
             
             result = self.handler._extract_label_from_history(chat_history)
             
-            # Should use mapping
+            # Should use mapping: 'promotional' -> 'promotions'
             assert result == "promotions", f"Expected 'promotions' from mapping, got '{result}'"
-            mock_mapping.get.assert_called()
 
 
 if __name__ == "__main__":

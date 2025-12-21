@@ -363,12 +363,13 @@ Now generate the title:"""
 # CLASSIFICATION HISTORY EXTRACTION PROMPTS
 # =============================================================================
 
-CLASSIFICATION_HISTORY_EXTRACTION_PROMPT = """Based on the conversation history below, what email classification label is being discussed?
+CLASSIFICATION_HISTORY_EXTRACTION_PROMPT = """Based on the conversation history below, what email \
+classification label is being discussed?
 
 {history_context}
 
 Look for patterns like:
-- "promotional emails", "marketing mail", "spam messages" 
+- "promotional emails", "marketing mail", "spam messages"
 - "job applications", "interview emails", "rejection notices"
 - "receipt emails", "finance messages", "security alerts"
 

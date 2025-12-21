@@ -111,9 +111,37 @@ class LLMProcessor:
         elif self.provider == "anthropic":
             return "claude-3-haiku-20240307"
         elif self.provider == "ollama":
-            return "llama3"
+            return self._get_best_ollama_model()
 
         return ""
+
+    def _get_best_ollama_model(self) -> str:
+        """Get the best available Ollama model by selecting the largest one.
+
+        Returns:
+            The name of the best available model, or 'llama3' as fallback.
+        """
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        try:
+            req = urllib.request.Request(f"{host}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read())
+                models = data.get("models", [])
+
+                if not models:
+                    logger.warning("[LLM] No Ollama models found, using fallback 'llama3'")
+                    return "llama3"
+
+                # Sort by size (descending) to get the most capable model
+                sorted_models = sorted(models, key=lambda m: m.get("size", 0), reverse=True)
+                best_model = sorted_models[0]["name"]
+
+                logger.info(f"[LLM] Auto-selected Ollama model: {best_model} (size: {sorted_models[0].get('size', 0)} bytes)")
+                return best_model
+
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"[LLM] Failed to fetch Ollama models: {e}, using fallback 'llama3'")
+            return "llama3"
 
     def _initialize_llm(self) -> Optional[BaseChatModel]:
         """Initialize LangChain LLM based on provider.
