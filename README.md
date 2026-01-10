@@ -28,13 +28,13 @@ organize-mail/
 ├── backend/                 # Python FastAPI backend
 │   ├── src/
 │   │   ├── api.py          # REST API endpoints
-│   │   ├── llm_processor.py # Multi-provider LLM system
 │   │   ├── clients/        # Gmail API client
 │   │   ├── jobs/           # Background jobs (classification, sync)
 │   │   ├── models/         # Data models (Message, ClassificationRecord)
-│   │   └── storage/        # Storage layer (SQLite, PostgreSQL)
-│   ├── tests/              # Pytest test suite
-│   └── examples/           # LLM provider examples & docs
+│   │   ├── services/       # LLM processor, RAG engine, query handlers
+│   │   ├── storage/        # Storage layer (SQLite, PostgreSQL)
+│   │   └── utils/          # HTML/CSS sanitizers, email processing
+│   └── tests/              # Pytest test suite
 ├── frontend/               # React + TypeScript UI
 │   ├── src/
 │   │   ├── components/     # React components (EmailList, etc.)
@@ -77,11 +77,8 @@ See [Backend README](backend/README.md) and [Frontend README](frontend/README.md
 
 - [Backend README](backend/README.md) - API, jobs, storage, and RAG details
 - [Frontend README](frontend/README.md) - UI components, logging, and development
-- [LLM Examples](backend/examples/README.md) - Provider setup and usage
-- [Quick Reference](backend/examples/QUICKSTART.md) - One-line setup commands
-- [8GB Setup Guide](backend/examples/SETUP_8GB.md) - Optimized for small VMs
-- [PostgreSQL Setup](POSTGRES_SETUP.md) - PostgreSQL storage configuration
-- [Architecture](docs/architecture.md) - System design and data flow
+- [Agents & LLM Components](agents.md) - Background jobs, LLM processors, and RAG engine
+- [Query Flow](docs/QUERY_FLOW.md) - Complete query pipeline and classification
 - [RAG Documentation](docs/RAG_DOC.md) - Retrieval-augmented generation system
 - [Storage Schema](docs/STORAGE_SCHEMA.md) - Database schema and migrations
 
