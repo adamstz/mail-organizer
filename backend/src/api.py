@@ -158,9 +158,40 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
         jwt_token = create_jwt_token(tokens.email)
         
         # Determine redirect URL
-        # If state contains a redirect URL, use it; otherwise go to frontend root
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
-        redirect_url = state if state else frontend_url
+        redirect_url = frontend_url
+        
+        # Parse state parameter to extract original redirect URL if present
+        if state:
+            # If state contains /api/auth/login, extract the redirect_url param from it
+            if "/api/auth/login" in state:
+                try:
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(state)
+                    params = parse_qs(parsed.query)
+                    if "redirect_url" in params:
+                        redirect_url = params["redirect_url"][0]
+                        logger.info(f"Extracted redirect URL from state: {redirect_url}")
+                except Exception as e:
+                    logger.warning(f"Failed to parse state parameter: {e}")
+                    redirect_url = frontend_url
+            else:
+                # Use state directly if it doesn't contain the login endpoint
+                redirect_url = state
+        
+        # Validate redirect URL to prevent open redirects
+        # Only allow redirects to the frontend URL or localhost variants
+        allowed_hosts = ["localhost", "127.0.0.1"]
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(redirect_url)
+            if parsed.hostname not in allowed_hosts:
+                logger.warning(f"Rejecting redirect to untrusted host: {parsed.hostname}")
+                redirect_url = frontend_url
+        except Exception:
+            redirect_url = frontend_url
+        
+        logger.info(f"Redirecting to: {redirect_url}")
         
         # Create redirect response with auth cookie
         response = RedirectResponse(url=redirect_url, status_code=302)
@@ -440,14 +471,6 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
         longest = max(html_parts, key=len)
         logger.info(f"[MIME EXTRACTION] Selected longest HTML: {len(longest)} chars")
 
-        # Log if there are images detected for debugging
-        if '<img' in longest:
-            img_count = longest.count('<img')
-            logger.info(f"[MIME EXTRACTION] HTML contains {img_count} <img> tag(s)")
-            print(f"✓ Found {img_count} <img> tags in extracted HTML")
-        else:
-            logger.warning(f"[MIME EXTRACTION] No <img> tags found in HTML")
-            print("⚠ WARNING: No <img> tags found in extracted HTML!")
 
         return longest
 

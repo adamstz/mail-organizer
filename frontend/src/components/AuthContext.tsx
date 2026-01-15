@@ -82,9 +82,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
 
   const login = useCallback(() => {
     // Redirect to backend OAuth endpoint
-    // Include current URL as state to redirect back after auth
-    const currentUrl = window.location.href;
-    window.location.href = `/api/auth/login?redirect_url=${encodeURIComponent(currentUrl)}`;
+    // Backend will redirect back to the frontend base URL after successful auth
+    window.location.href = '/api/auth/login';
   }, []);
 
   const logout = useCallback(async () => {
