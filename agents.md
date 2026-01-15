@@ -233,11 +233,21 @@ The `LLMProcessor` reads configuration from environment variables. Key variables
 - `ORGANIZE_MAIL_LLM_CMD` — external command to call for `command` provider
 - `LLM_MODEL` — override model name (defaults vary by provider)
 
+Authentication variables (for OAuth flow):
+- `JWT_SECRET` — **Required.** Secret key for signing JWT tokens. Generate with `openssl rand -hex 32`
+- `GOOGLE_CLIENT_ID` — **Required.** OAuth client ID from GCP Console
+- `GOOGLE_CLIENT_SECRET` — **Required.** OAuth client secret from GCP Console
+- `ALLOWED_EMAIL` — Optional. Restrict authentication to a specific Gmail address (recommended for self-hosted)
+- `OAUTH_REDIRECT_URI` — Optional. Override the OAuth callback URL (default: `http://localhost:8000/api/auth/callback`)
+- `FRONTEND_URL` — Optional. Frontend URL for redirects after OAuth (default: `http://localhost:5173`)
+- `SECURE_COOKIES` — Optional. Set to `true` for HTTPS deployments
+
 Other service variables (used by storage/RAG):
 - DB connection details (set in the environment or storage config)
 - `PGVECTOR` and `pgvector` extension — required for RAG/embedding search in Postgres
 
 For complete configuration details and query pipeline documentation, see `docs/QUERY_FLOW.md`.
+For authentication setup details, see `docs/AUTH_IMPLEMENTATION_PLAN.md`.
 
 Provider examples (copy/paste)
 

@@ -1,16 +1,19 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { ThemeProvider, CssBaseline, Container, AppBar, Toolbar, Typography, Box, IconButton, Tooltip } from '@mui/material';
+import { ThemeProvider, CssBaseline, Container, AppBar, Toolbar, Typography, Box, IconButton, Tooltip, CircularProgress } from '@mui/material';
 import { createTheme } from '@mui/material/styles';
 import ChatIcon from '@mui/icons-material/Chat';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
+import LogoutIcon from '@mui/icons-material/Logout';
 import EmailList from './components/EmailList';
 import EmailToolbar from './components/EmailToolbar';
 import SyncStatus from './components/SyncStatus';
 import ChatInterface from './components/ChatInterface';
 import LogViewer from './components/LogViewer';
+import { AuthProvider, useAuth } from './components/AuthContext';
+import LoginPage from './components/LoginPage';
 import { logger } from './utils/logger';
 
 const getTheme = (mode: 'light' | 'dark') => createTheme({
@@ -56,6 +59,15 @@ const getTheme = (mode: 'light' | 'dark') => createTheme({
 });
 
 const App: React.FC = () => {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+};
+
+const AppContent: React.FC = () => {
+  const { authenticated, loading, email, logout } = useAuth();
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('themeMode');
     return (saved as 'light' | 'dark') || 'dark';
@@ -81,7 +93,7 @@ const App: React.FC = () => {
   const theme = useMemo(() => getTheme(themeMode), [themeMode]);
 
   const toggleTheme = () => {
-    setThemeMode((prev) => {
+    setThemeMode((prev: 'light' | 'dark') => {
       const newMode = prev === 'light' ? 'dark' : 'light';
       localStorage.setItem('themeMode', newMode);
       return newMode;
@@ -194,7 +206,7 @@ const App: React.FC = () => {
     // Toggle label filter: add or remove from array
     if (filters.labels.includes(label)) {
       // Remove this label
-      setFilters({ ...filters, labels: filters.labels.filter(l => l !== label) });
+      setFilters({ ...filters, labels: filters.labels.filter((l: string) => l !== label) });
     } else {
       // Add this label
       setFilters({ ...filters, labels: [...filters.labels, label] });
@@ -211,7 +223,7 @@ const App: React.FC = () => {
   };
 
   const toggleSortOrder = () => {
-    setSortOrder(prev => prev === 'recent' ? 'oldest' : 'recent');
+    setSortOrder((prev: 'recent' | 'oldest') => prev === 'recent' ? 'oldest' : 'recent');
   };
 
 
@@ -223,9 +235,39 @@ const App: React.FC = () => {
 
   // Handler to refresh email list after sync
   const handleSyncRefresh = () => {
-    setRefreshKey(prev => prev + 1);
+    setRefreshKey((prev: number) => prev + 1);
     logger.info('Email list refreshed after sync operation');
   };
+
+  // Show loading state while checking auth
+  if (loading) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minHeight: '100vh',
+            bgcolor: 'background.default',
+          }}
+        >
+          <CircularProgress />
+        </Box>
+      </ThemeProvider>
+    );
+  }
+
+  // Show login page if not authenticated
+  if (!authenticated) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <LoginPage />
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider theme={theme}>
@@ -261,6 +303,17 @@ const App: React.FC = () => {
               {isChatVisible ? <ChatIcon /> : <ChatBubbleOutlineIcon />}
             </IconButton>
           </Tooltip>
+          {email && (
+            <Tooltip title={`Logged in as ${email}. Click to logout.`}>
+              <IconButton
+                color="inherit"
+                onClick={logout}
+                sx={{ ml: 1 }}
+              >
+                <LogoutIcon />
+              </IconButton>
+            </Tooltip>
+          )}
         </Toolbar>
       </AppBar>
       <Container

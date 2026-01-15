@@ -272,3 +272,62 @@ class StorageBackend:
             chat_session_id: Chat session ID
         """
         raise NotImplementedError()
+
+    # OAuth token storage methods
+    def save_oauth_tokens(
+        self,
+        email: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry: "datetime",
+    ) -> None:
+        """Save OAuth tokens for a user (upsert).
+
+        Tokens should be encrypted at the storage layer when possible.
+
+        Args:
+            email: User's email address (identity)
+            access_token: OAuth access token
+            refresh_token: OAuth refresh token
+            token_expiry: Token expiration datetime
+        """
+        raise NotImplementedError()
+
+    def get_oauth_tokens(self, email: str) -> Optional[dict]:
+        """Get OAuth tokens for a user.
+
+        Args:
+            email: User's email address
+
+        Returns:
+            Dict with access_token, refresh_token, token_expiry, or None if not found
+        """
+        raise NotImplementedError()
+
+    def update_access_token(self, email: str, access_token: str, token_expiry: "datetime") -> None:
+        """Update only the access token (after refresh).
+
+        Args:
+            email: User's email address
+            access_token: New access token
+            token_expiry: New token expiration datetime
+        """
+        raise NotImplementedError()
+
+    def delete_oauth_tokens(self, email: str) -> None:
+        """Delete OAuth tokens for a user (logout).
+
+        Args:
+            email: User's email address
+        """
+        raise NotImplementedError()
+
+    def get_authenticated_email(self) -> Optional[str]:
+        """Get the email of the currently authenticated user.
+
+        For single-user deployments, returns the first/only authenticated email.
+
+        Returns:
+            Email address if authenticated, None otherwise
+        """
+        raise NotImplementedError()

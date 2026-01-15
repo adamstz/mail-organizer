@@ -283,3 +283,43 @@ def update_chat_session_title(chat_session_id: str, title: str) -> None:
 def update_chat_session_timestamp(chat_session_id: str) -> None:
     """Update the updated_at timestamp of a chat session."""
     get_storage_backend().update_chat_session_timestamp(chat_session_id=chat_session_id)
+
+
+# OAuth token methods
+def save_oauth_tokens(
+    email: str,
+    access_token: str,
+    refresh_token: str,
+    token_expiry,
+) -> None:
+    """Save OAuth tokens for a user (upsert)."""
+    get_storage_backend().save_oauth_tokens(
+        email=email,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_expiry=token_expiry,
+    )
+
+
+def get_oauth_tokens(email: str) -> Optional[dict]:
+    """Get OAuth tokens for a user."""
+    return get_storage_backend().get_oauth_tokens(email=email)
+
+
+def update_access_token(email: str, access_token: str, token_expiry) -> None:
+    """Update only the access token (after refresh)."""
+    get_storage_backend().update_access_token(
+        email=email,
+        access_token=access_token,
+        token_expiry=token_expiry,
+    )
+
+
+def delete_oauth_tokens(email: str) -> None:
+    """Delete OAuth tokens for a user (logout)."""
+    get_storage_backend().delete_oauth_tokens(email=email)
+
+
+def get_authenticated_email() -> Optional[str]:
+    """Get the email of the currently authenticated user."""
+    return get_storage_backend().get_authenticated_email()

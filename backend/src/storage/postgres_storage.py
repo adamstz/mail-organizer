@@ -1769,3 +1769,154 @@ class PostgresStorage(StorageBackend):
 
         # Return as (message, score) tuples
         return [(item['message'], item['score']) for item in sorted_results]
+
+    # =========================================================================
+    # OAuth Token Storage Methods
+    # =========================================================================
+
+    def _get_encryption_key(self) -> str:
+        """Get the encryption key for token storage.
+
+        Uses JWT_SECRET as the encryption key for consistency.
+        Falls back to a default for development (not secure for production).
+        """
+        import os
+        key = os.environ.get("JWT_SECRET")
+        if not key:
+            # Development fallback - log warning
+            import logging
+            logging.warning(
+                "JWT_SECRET not set - using insecure default for token encryption. "
+                "Set JWT_SECRET environment variable for production."
+            )
+            key = "dev_insecure_default_key_change_me"
+        return key
+
+    def save_oauth_tokens(
+        self,
+        email: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry,
+    ) -> None:
+        """Save OAuth tokens for a user (upsert) with encryption."""
+        conn = self.connect()
+        cur = conn.cursor()
+        encryption_key = self._get_encryption_key()
+
+        try:
+            # Use pgp_sym_encrypt for column-level encryption
+            cur.execute(
+                """
+                INSERT INTO oauth_tokens (email, access_token, refresh_token, token_expiry)
+                VALUES (
+                    %s,
+                    pgp_sym_encrypt(%s, %s),
+                    pgp_sym_encrypt(%s, %s),
+                    %s
+                )
+                ON CONFLICT (email) DO UPDATE SET
+                    access_token = pgp_sym_encrypt(%s, %s),
+                    refresh_token = pgp_sym_encrypt(%s, %s),
+                    token_expiry = %s,
+                    updated_at = NOW()
+                """,
+                (
+                    email,
+                    access_token, encryption_key,
+                    refresh_token, encryption_key,
+                    token_expiry,
+                    access_token, encryption_key,
+                    refresh_token, encryption_key,
+                    token_expiry,
+                ),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def get_oauth_tokens(self, email: str):
+        """Get decrypted OAuth tokens for a user."""
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        encryption_key = self._get_encryption_key()
+
+        try:
+            cur.execute(
+                """
+                SELECT
+                    email,
+                    pgp_sym_decrypt(access_token, %s) as access_token,
+                    pgp_sym_decrypt(refresh_token, %s) as refresh_token,
+                    token_expiry
+                FROM oauth_tokens
+                WHERE email = %s
+                """,
+                (encryption_key, encryption_key, email),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "email": row["email"],
+                "access_token": row["access_token"],
+                "refresh_token": row["refresh_token"],
+                "token_expiry": row["token_expiry"],
+            }
+        finally:
+            cur.close()
+            conn.close()
+
+    def update_access_token(self, email: str, access_token: str, token_expiry) -> None:
+        """Update only the access token after refresh."""
+        conn = self.connect()
+        cur = conn.cursor()
+        encryption_key = self._get_encryption_key()
+
+        try:
+            cur.execute(
+                """
+                UPDATE oauth_tokens
+                SET
+                    access_token = pgp_sym_encrypt(%s, %s),
+                    token_expiry = %s,
+                    updated_at = NOW()
+                WHERE email = %s
+                """,
+                (access_token, encryption_key, token_expiry, email),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def delete_oauth_tokens(self, email: str) -> None:
+        """Delete OAuth tokens for a user (logout)."""
+        conn = self.connect()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("DELETE FROM oauth_tokens WHERE email = %s", (email,))
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def get_authenticated_email(self):
+        """Get the email of any authenticated user.
+
+        For single-user deployments, returns the first email found.
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("SELECT email FROM oauth_tokens LIMIT 1")
+            row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            cur.close()
+            conn.close()

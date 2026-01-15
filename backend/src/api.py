@@ -1,15 +1,27 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, Response
 from typing import List, Optional
 from pydantic import BaseModel
 import logging
 import asyncio
 from collections import deque
 from datetime import datetime
+import os
 
 from . import storage
 from .services import LLMProcessor, EmbeddingService, RAGQueryEngine
 from .sync_manager import get_sync_manager
+from .auth import (
+    get_google_auth_url,
+    exchange_code_for_tokens,
+    get_current_user,
+    require_auth,
+    create_jwt_token,
+    JWT_COOKIE_NAME,
+    AuthenticatedUser,
+)
+from .auth.middleware import set_auth_cookie, clear_auth_cookie
 
 app = FastAPI(title="organize-mail backend")
 
@@ -93,6 +105,112 @@ logger.setLevel(logging.INFO)
 async def health():
     logger.debug("Health check requested")
     return {"status": "ok"}
+
+
+# =============================================================================
+# Authentication Endpoints
+# =============================================================================
+
+@app.get("/api/auth/login")
+async def auth_login(redirect_url: Optional[str] = Query(None)):
+    """Redirect to Google OAuth consent screen.
+    
+    Args:
+        redirect_url: Optional URL to redirect to after successful auth (stored in state)
+    """
+    logger.info("Starting OAuth login flow")
+    try:
+        # Use redirect_url as state if provided (will be used after callback)
+        auth_url = get_google_auth_url(state=redirect_url)
+        return RedirectResponse(url=auth_url)
+    except ValueError as e:
+        logger.error(f"OAuth configuration error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+@app.get("/api/auth/callback")
+async def auth_callback(code: str = Query(...), state: Optional[str] = Query(None)):
+    """Handle OAuth callback from Google.
+    
+    Exchanges the authorization code for tokens, stores them,
+    and sets a JWT cookie for the session.
+    """
+    logger.info("Received OAuth callback")
+    
+    try:
+        # Exchange code for tokens
+        tokens = await exchange_code_for_tokens(code)
+        
+        # Store tokens in database
+        storage.save_oauth_tokens(
+            email=tokens.email,
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            token_expiry=tokens.token_expiry,
+        )
+        
+        logger.info(f"OAuth tokens stored for user: {tokens.email}")
+        
+        # Create JWT for session
+        jwt_token = create_jwt_token(tokens.email)
+        
+        # Determine redirect URL
+        # If state contains a redirect URL, use it; otherwise go to frontend root
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        redirect_url = state if state else frontend_url
+        
+        # Create redirect response with auth cookie
+        response = RedirectResponse(url=redirect_url, status_code=302)
+        set_auth_cookie(response, jwt_token)
+        
+        return response
+        
+    except ValueError as e:
+        logger.error(f"OAuth callback error: {e}")
+        # Redirect to frontend with error
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        error_url = f"{frontend_url}?auth_error={str(e)}"
+        return RedirectResponse(url=error_url, status_code=302)
+
+
+@app.get("/api/auth/status")
+async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_user)):
+    """Check authentication status.
+    
+    Returns the current user's email if authenticated, or null if not.
+    """
+    if user:
+        return {
+            "authenticated": True,
+            "email": user.email,
+        }
+    return {
+        "authenticated": False,
+        "email": None,
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response, user: Optional[AuthenticatedUser] = Depends(get_current_user)):
+    """Log out by clearing the auth cookie.
+    
+    Optionally also removes stored tokens from database.
+    """
+    if user:
+        # Optionally delete tokens from database
+        try:
+            storage.delete_oauth_tokens(user.email)
+            logger.info(f"Deleted OAuth tokens for user: {user.email}")
+        except Exception as e:
+            logger.warning(f"Failed to delete tokens from database: {e}")
+    
+    # Clear the auth cookie
+    clear_auth_cookie(response)
+    
+    return {"status": "logged_out"}
 
 
 @app.websocket("/ws/logs")

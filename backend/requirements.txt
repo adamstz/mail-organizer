@@ -5,8 +5,9 @@ google-api-python-client
 google-auth-oauthlib
 google-cloud-pubsub
 pydantic
-httpx  # Required for FastAPI TestClient
+httpx  # Required for FastAPI TestClient and OAuth flows
 psycopg2-binary>=2.9.0  # PostgreSQL adapter
+PyJWT>=2.8.0  # JWT token handling for authentication
 
 # LLM providers (optional - install what you need)
 openai>=1.0.0

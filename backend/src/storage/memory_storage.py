@@ -316,3 +316,52 @@ class InMemoryStorage(StorageBackend):
             if msg.labels and 'UNREAD' in msg.labels:
                 count += 1
         return count
+
+    # =========================================================================
+    # OAuth Token Storage Methods (in-memory for testing)
+    # =========================================================================
+    
+    def __init_oauth_storage(self):
+        """Initialize OAuth storage if not already done."""
+        if not hasattr(self, '_oauth_tokens'):
+            self._oauth_tokens: dict[str, dict] = {}
+
+    def save_oauth_tokens(
+        self,
+        email: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry,
+    ) -> None:
+        """Save OAuth tokens for a user (upsert)."""
+        self.__init_oauth_storage()
+        self._oauth_tokens[email] = {
+            "email": email,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_expiry": token_expiry,
+        }
+
+    def get_oauth_tokens(self, email: str) -> Optional[dict]:
+        """Get OAuth tokens for a user."""
+        self.__init_oauth_storage()
+        return self._oauth_tokens.get(email)
+
+    def update_access_token(self, email: str, access_token: str, token_expiry) -> None:
+        """Update only the access token (after refresh)."""
+        self.__init_oauth_storage()
+        if email in self._oauth_tokens:
+            self._oauth_tokens[email]["access_token"] = access_token
+            self._oauth_tokens[email]["token_expiry"] = token_expiry
+
+    def delete_oauth_tokens(self, email: str) -> None:
+        """Delete OAuth tokens for a user (logout)."""
+        self.__init_oauth_storage()
+        self._oauth_tokens.pop(email, None)
+
+    def get_authenticated_email(self) -> Optional[str]:
+        """Get the email of any authenticated user."""
+        self.__init_oauth_storage()
+        if self._oauth_tokens:
+            return next(iter(self._oauth_tokens.keys()))
+        return None
