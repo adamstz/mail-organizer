@@ -112,17 +112,104 @@ async def health():
 # =============================================================================
 
 @app.get("/api/auth/login")
-async def auth_login(redirect_url: Optional[str] = Query(None)):
-    """Redirect to Google OAuth consent screen.
+async def auth_login(
+    redirect_url: Optional[str] = Query(None),
+    user: Optional[AuthenticatedUser] = Depends(get_current_user)
+):
+    """Redirect to Google OAuth consent screen or create session if tokens exist.
+    
+    This endpoint checks for existing valid OAuth tokens before redirecting to Google:
+    1. If user has valid JWT session → redirect to frontend
+    2. If user has valid OAuth tokens in DB → create JWT session and redirect
+    3. If user has expired OAuth tokens → refresh them, create session, redirect
+    4. Otherwise → redirect to Google OAuth consent screen
     
     Args:
         redirect_url: Optional URL to redirect to after successful auth (stored in state)
+        user: Current authenticated user (if any)
     """
     logger.info("Starting OAuth login flow")
+    
     try:
-        # Use redirect_url as state if provided (will be used after callback)
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        target_redirect = redirect_url or frontend_url
+        
+        # Check if user already has a valid JWT session
+        if user:
+            logger.info(f"User {user.email} already has valid JWT session, redirecting to frontend")
+            return RedirectResponse(url=target_redirect, status_code=302)
+        
+        # Check if we can find OAuth tokens in the database
+        # For single-user deployments, get the authenticated email
+        authenticated_email = storage.get_authenticated_email()
+        
+        if authenticated_email:
+            logger.info(f"Found authenticated user in database: {authenticated_email}")
+            
+            # Get stored OAuth tokens
+            tokens_data = storage.get_oauth_tokens(authenticated_email)
+            
+            if tokens_data:
+                from datetime import datetime, timezone
+                
+                access_token = tokens_data.get("access_token")
+                refresh_token = tokens_data.get("refresh_token")
+                token_expiry = tokens_data.get("token_expiry")
+                
+                logger.info(f"Found OAuth tokens for {authenticated_email}, checking expiry")
+                
+                # Check if access token is still valid
+                now = datetime.now(timezone.utc)
+                
+                if token_expiry and token_expiry > now:
+                    # Token is still valid, create JWT session and redirect
+                    logger.info(f"Access token still valid until {token_expiry}, creating JWT session")
+                    
+                    jwt_token = create_jwt_token(authenticated_email)
+                    response = RedirectResponse(url=target_redirect, status_code=302)
+                    set_auth_cookie(response, jwt_token)
+                    
+                    return response
+                
+                elif refresh_token:
+                    # Access token expired, but we have a refresh token
+                    logger.info(f"Access token expired, attempting refresh for {authenticated_email}")
+                    
+                    try:
+                        from .auth.oauth import refresh_access_token
+                        
+                        new_access_token, new_expiry = await refresh_access_token(refresh_token)
+                        
+                        # Update stored tokens
+                        storage.update_access_token(
+                            email=authenticated_email,
+                            access_token=new_access_token,
+                            token_expiry=new_expiry
+                        )
+                        
+                        logger.info(f"Successfully refreshed access token for {authenticated_email}")
+                        
+                        # Create JWT session and redirect
+                        jwt_token = create_jwt_token(authenticated_email)
+                        response = RedirectResponse(url=target_redirect, status_code=302)
+                        set_auth_cookie(response, jwt_token)
+                        
+                        return response
+                        
+                    except Exception as refresh_error:
+                        logger.warning(
+                            f"Failed to refresh token for {authenticated_email}: {refresh_error}. "
+                            "Will proceed with full OAuth flow."
+                        )
+                        # Fall through to OAuth flow below
+                else:
+                    logger.info(f"No refresh token available for {authenticated_email}, need full OAuth")
+        
+        # No valid tokens found, proceed with full OAuth flow
+        logger.info("No valid tokens found, redirecting to Google OAuth consent screen")
         auth_url = get_google_auth_url(state=redirect_url)
         return RedirectResponse(url=auth_url)
+        
     except ValueError as e:
         logger.error(f"OAuth configuration error: {e}")
         raise HTTPException(

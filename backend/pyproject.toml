@@ -8,6 +8,10 @@ pythonpath = "."
 markers = [
     "slow: marks tests as slow (deselected by default)",
     "integration: marks tests as integration tests requiring database",
+    "asyncio: marks tests as async (handled by pytest-anyio plugin)",
 ]
 # Skip slow tests by default - run with `pytest -m slow` or `pytest --run-slow` to include them
 addopts = "-m 'not slow'"
+# Configure asyncio mode
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

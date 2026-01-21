@@ -40,9 +40,9 @@ test: lint
 test-all:
 	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -vv --tb=short
 
-# Run only unit tests (excludes smoke)
+# Run only unit tests (excludes integration, smoke, and other)
 test-unit:
-	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -v --ignore=tests/smoke/
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/unit/ -v
 
 # Run smoke tests only
 test-smoke:

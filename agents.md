@@ -242,6 +242,21 @@ Authentication variables (for OAuth flow):
 - `FRONTEND_URL` — Optional. Frontend URL for redirects after OAuth (default: `http://localhost:5173`)
 - `SECURE_COOKIES` — Optional. Set to `true` for HTTPS deployments
 
+**OAuth Token Management:**
+
+The system implements intelligent token management to minimize unnecessary OAuth flows:
+
+1. **Token Checking**: Before redirecting to Google OAuth, the `/api/auth/login` endpoint checks for:
+   - Valid JWT session cookie (if present, redirects immediately)
+   - Valid OAuth tokens in database (if present and not expired, creates JWT session)
+   - Expired OAuth tokens with refresh token (automatically refreshes and creates session)
+
+2. **Automatic Token Refresh**: When OAuth tokens expire, the system automatically uses the refresh token to obtain new access tokens without requiring user interaction.
+
+3. **Graceful Fallback**: If token refresh fails or no tokens exist, the system falls back to the full OAuth consent flow.
+
+This approach significantly reduces friction for returning users while maintaining security.
+
 Other service variables (used by storage/RAG):
 - DB connection details (set in the environment or storage config)
 - `PGVECTOR` and `pgvector` extension — required for RAG/embedding search in Postgres
