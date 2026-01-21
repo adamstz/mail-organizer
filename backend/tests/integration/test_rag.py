@@ -22,6 +22,9 @@ os.environ.pop("ORGANIZE_MAIL_LLM_CMD", None)
 
 import pytest
 from unittest.mock import MagicMock, patch
+
+pytestmark = pytest.mark.integration
+
 from src.storage.storage import get_storage_backend
 from src.storage.memory_storage import InMemoryStorage
 from src.services import EmbeddingService, LLMProcessor, RAGQueryEngine

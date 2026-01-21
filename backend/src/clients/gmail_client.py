@@ -51,27 +51,27 @@ def build_credentials_from_oauth(
 
 def build_credentials_from_db(email: Optional[str] = None) -> Optional[OAuthCredentials]:
     """Build OAuth2 credentials from tokens stored in the database.
-    
+
     This is the preferred method for self-hosted deployments using the OAuth flow.
     Falls back to environment variables if no tokens are found in the database.
-    
+
     Args:
         email: Specific email to get tokens for. If None, gets the first authenticated user.
-    
+
     Returns:
         OAuthCredentials if tokens found, None otherwise
     """
     # Import here to avoid circular imports
     from .. import storage
-    
+
     # Get OAuth config from environment (needed for client_id/secret)
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-    
+
     if not client_id or not client_secret:
         logger.warning("GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set")
         return None
-    
+
     # Try to get tokens from database
     try:
         if email:
@@ -83,13 +83,13 @@ def build_credentials_from_db(email: Optional[str] = None) -> Optional[OAuthCred
                 logger.debug("No authenticated user found in database")
                 return None
             tokens = storage.get_oauth_tokens(authenticated_email)
-        
+
         if not tokens:
             logger.debug(f"No OAuth tokens found for email: {email or 'any'}")
             return None
-        
+
         logger.debug(f"Building credentials from database for: {tokens['email']}")
-        
+
         return OAuthCredentials(
             token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
@@ -98,7 +98,7 @@ def build_credentials_from_db(email: Optional[str] = None) -> Optional[OAuthCred
             client_secret=client_secret,
             scopes=list(DEFAULT_GMAIL_SCOPES),
         )
-        
+
     except Exception as e:
         logger.error(f"Error getting tokens from database: {e}")
         return None
@@ -106,15 +106,15 @@ def build_credentials_from_db(email: Optional[str] = None) -> Optional[OAuthCred
 
 def get_gmail_credentials(email: Optional[str] = None) -> Optional[Credentials]:
     """Get Gmail credentials using the best available method.
-    
+
     Priority:
     1. Database-stored OAuth tokens (from OAuth flow)
     2. Environment variable credentials (GOOGLE_REFRESH legacy method)
     3. Application Default Credentials (for service accounts)
-    
+
     Args:
         email: Specific email to get tokens for (optional)
-    
+
     Returns:
         Credentials object if available, None otherwise
     """
@@ -123,16 +123,16 @@ def get_gmail_credentials(email: Optional[str] = None) -> Optional[Credentials]:
     if creds:
         logger.debug("Using credentials from database")
         return creds
-    
+
     # Fall back to environment variables (legacy method)
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
     refresh_token = os.environ.get("GOOGLE_REFRESH")
-    
+
     if client_id and client_secret and refresh_token:
         logger.debug("Using credentials from environment variables (legacy)")
         return build_credentials_from_oauth(client_id, client_secret, refresh_token)
-    
+
     # Fall back to Application Default Credentials
     try:
         logger.debug("Attempting Application Default Credentials")
@@ -140,7 +140,7 @@ def get_gmail_credentials(email: Optional[str] = None) -> Optional[Credentials]:
         return creds
     except Exception as e:
         logger.debug(f"ADC not available: {e}")
-    
+
     return None
 
 
@@ -161,7 +161,7 @@ def build_gmail_service(
 
     The helper also refreshes expiring credentials and updates the database
     with new access tokens if using database-stored credentials.
-    
+
     Args:
         credentials: Optional pre-built credentials
         scopes: OAuth scopes to request
@@ -173,7 +173,7 @@ def build_gmail_service(
 
     if credentials is None:
         credentials = get_gmail_credentials(email)
-        
+
         if credentials is None:
             raise ValueError(
                 "No Gmail credentials available. Either:\n"
@@ -189,7 +189,7 @@ def build_gmail_service(
     if not credentials.valid:
         request = Request()
         credentials.refresh(request)
-        
+
         # If using OAuth credentials, update the access token in database
         if isinstance(credentials, OAuthCredentials) and credentials.token:
             try:

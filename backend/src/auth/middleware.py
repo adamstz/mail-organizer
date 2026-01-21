@@ -32,7 +32,7 @@ class AuthenticatedUser:
 
 def get_jwt_secret() -> str:
     """Get the JWT secret key from environment.
-    
+
     Raises:
         ValueError: If JWT_SECRET is not set
     """
@@ -47,30 +47,30 @@ def get_jwt_secret() -> str:
 
 def create_jwt_token(email: str) -> str:
     """Create a JWT token for a user.
-    
+
     Args:
         email: The user's email address (identity)
-    
+
     Returns:
         Signed JWT token string
     """
     secret = get_jwt_secret()
-    
+
     payload = {
         "sub": email,
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS),
     }
-    
+
     return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
 
 
 def decode_jwt_token(token: str) -> Optional[str]:
     """Decode and validate a JWT token.
-    
+
     Args:
         token: JWT token string
-    
+
     Returns:
         User email if valid, None otherwise
     """
@@ -88,7 +88,7 @@ def decode_jwt_token(token: str) -> Optional[str]:
 
 def set_auth_cookie(response: Response, token: str) -> None:
     """Set the authentication cookie on a response.
-    
+
     Args:
         response: FastAPI Response object
         token: JWT token to set
@@ -96,7 +96,7 @@ def set_auth_cookie(response: Response, token: str) -> None:
     # Use secure settings appropriate for self-hosted
     # In production behind HTTPS, set secure=True
     is_secure = os.environ.get("SECURE_COOKIES", "false").lower() == "true"
-    
+
     response.set_cookie(
         key=JWT_COOKIE_NAME,
         value=token,
@@ -110,7 +110,7 @@ def set_auth_cookie(response: Response, token: str) -> None:
 
 def clear_auth_cookie(response: Response) -> None:
     """Clear the authentication cookie.
-    
+
     Args:
         response: FastAPI Response object
     """
@@ -122,26 +122,26 @@ def clear_auth_cookie(response: Response) -> None:
 
 async def get_current_user(request: Request) -> Optional[AuthenticatedUser]:
     """Get the current authenticated user from the request.
-    
+
     This is a FastAPI dependency that extracts and validates the JWT
     from the auth cookie. Returns None if not authenticated.
-    
+
     Args:
         request: FastAPI Request object
-    
+
     Returns:
         AuthenticatedUser if valid token present, None otherwise
     """
     token = request.cookies.get(JWT_COOKIE_NAME)
-    
+
     if not token:
         return None
-    
+
     email = decode_jwt_token(token)
-    
+
     if not email:
         return None
-    
+
     return AuthenticatedUser(email=email)
 
 
@@ -149,16 +149,16 @@ async def require_auth(
     user: Optional[AuthenticatedUser] = Depends(get_current_user)
 ) -> AuthenticatedUser:
     """Require authentication for an endpoint.
-    
+
     Use this as a FastAPI dependency to protect endpoints.
     Raises 401 Unauthorized if not authenticated.
-    
+
     Args:
         user: Injected by get_current_user dependency
-    
+
     Returns:
         AuthenticatedUser
-    
+
     Raises:
         HTTPException: 401 if not authenticated
     """

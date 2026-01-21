@@ -86,8 +86,7 @@ def test_label_mapping():
     
     print(f"\n{'=' * 40}")
     print(f"📊 OVERALL: {'✅ ALL TESTS PASSED' if all_passed else '❌ SOME TESTS FAILED'}")
-    return all_passed
+    assert all_passed, "Some label mapping tests failed"
 
 if __name__ == "__main__":
-    success = test_label_mapping()
-    sys.exit(0 if success else 1)
+    test_label_mapping()

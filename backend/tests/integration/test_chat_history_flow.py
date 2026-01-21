@@ -4,6 +4,8 @@ from unittest.mock import Mock, AsyncMock, MagicMock
 import sys
 import os
 
+pytestmark = pytest.mark.integration
+
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
 

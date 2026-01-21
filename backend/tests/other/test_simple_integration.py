@@ -3,6 +3,7 @@
 
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
 
 from src.services.rag_engine import RAGQueryEngine
@@ -12,6 +13,8 @@ from src.services.embedding_service import EmbeddingService
 from src.models.message import MailMessage
 from unittest.mock import Mock, MagicMock
 
+
+@pytest.mark.skip(reason="Requires real LLM provider, not rules provider")
 def test_basic_functionality():
     """Test basic chat history functionality."""
     print("🧪 Testing Chat History Functionality")
@@ -114,17 +117,15 @@ def test_basic_functionality():
         
         if passed == len(tests):
             print("🎉 ALL TESTS PASSED!")
-            return True
         else:
             print("⚠️  Some tests failed.")
-            return False
-            
+        assert passed == len(tests), f"Only {passed}/{len(tests)} tests passed"
+
     except Exception as e:
         print(f"❌ SETUP FAILED: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        raise
 
 if __name__ == "__main__":
-    success = test_basic_functionality()
-    sys.exit(0 if success else 1)
+    test_basic_functionality()

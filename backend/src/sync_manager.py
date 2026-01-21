@@ -97,10 +97,10 @@ class SyncManager:
 
     def _get_gmail_sync_counts(self, existing_ids: set) -> tuple[Optional[int], int]:
         """Get Gmail INBOX count and calculate how many messages need syncing.
-        
+
         Args:
             existing_ids: Set of message IDs already in the database
-            
+
         Returns:
             Tuple of (total_gmail_count, not_synced_count)
         """
@@ -118,7 +118,7 @@ class SyncManager:
 
             client_id = os.environ.get("GOOGLE_CLIENT_ID")
             client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-            
+
             if not all([client_id, client_secret]):
                 logger.warning("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables not set")
                 return None, 0
@@ -143,13 +143,13 @@ class SyncManager:
                 request = messages_resource.list_next(request, resp)
 
             total_count = len(gmail_ids)
-            
+
             # Count how many are NOT in our database
             missing_ids = [mid for mid in gmail_ids if mid not in existing_ids]
             not_synced_count = len(missing_ids)
 
             logger.debug(f"Gmail sync status: {total_count} total, {not_synced_count} not synced")
-            
+
             return total_count, not_synced_count
 
         except Exception as e:

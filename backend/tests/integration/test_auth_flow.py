@@ -11,6 +11,8 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.integration
+
 # Set required environment variables before imports
 os.environ["JWT_SECRET"] = "test_jwt_secret_for_integration_tests"
 os.environ["GOOGLE_CLIENT_ID"] = "test_client_id"

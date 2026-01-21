@@ -37,12 +37,12 @@ class SemanticHandler(QueryHandler):
         top_k: int = 5
     ) -> List[Tuple]:
         """Rerank retrieval results using cross-encoder for better relevance.
-        
+
         Args:
             question: User's query
             results: List of (message, score) tuples from initial retrieval
             top_k: Number of top results to return after reranking
-            
+
         Returns:
             Reranked list of (message, new_score) tuples
         """
@@ -50,7 +50,7 @@ class SemanticHandler(QueryHandler):
         if cross_encoder is None or len(results) <= 1:
             # No reranking available or not enough results
             return results[:top_k]
-        
+
         try:
             # Prepare query-document pairs for cross-encoder
             pairs = []
@@ -58,20 +58,20 @@ class SemanticHandler(QueryHandler):
                 # Create searchable text from message
                 doc_text = f"{message.subject or ''} {message.snippet or ''}"
                 pairs.append([question, doc_text])
-            
+
             # Get cross-encoder scores
             scores = cross_encoder.predict(pairs)
-            
+
             # Combine with original results and sort by cross-encoder score
             reranked = [
                 (message, float(score))
                 for (message, _), score in zip(results, scores)
             ]
             reranked.sort(key=lambda x: x[1], reverse=True)
-            
+
             logger.debug(f"[SEMANTIC] Reranked {len(results)} results to top {top_k}")
             return reranked[:top_k]
-            
+
         except Exception as e:
             logger.warning(f"[SEMANTIC] Reranking failed: {e}. Using original results.")
             return results[:top_k]
@@ -152,7 +152,7 @@ class SemanticHandler(QueryHandler):
                 # Rerank the vector results
                 similar_emails = self._rerank_results(question, similar_emails, top_k=limit)
                 logger.debug("[SEMANTIC QUERY] Vector search + rerank returned %d results", len(similar_emails))
-                
+
         except Exception as e:
             logger.debug("[SEMANTIC QUERY] Search failed: %s", e)
             return self._build_response(

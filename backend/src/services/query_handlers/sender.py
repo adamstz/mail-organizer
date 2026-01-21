@@ -80,7 +80,7 @@ class SenderHandler(QueryHandler):
         """
         logger.info("[SENDER HANDLER] ========== Extracting Sender ==========")
         logger.info("[SENDER HANDLER] Question: '%s'", question)
-        
+
         # If there's chat history, include it for pronoun resolution
         history_context = self._format_chat_history(chat_history) if chat_history else ""
         if history_context:
@@ -88,7 +88,7 @@ class SenderHandler(QueryHandler):
 
         prompt = SENDER_EXTRACTION_PROMPT.format(question=question) + history_context
         logger.info("[SENDER HANDLER] Extraction prompt:\n%s", prompt)
-        
+
         response = self._call_llm_simple(prompt).strip()
         logger.info("[SENDER HANDLER] Raw LLM response: '%s'", response)
 

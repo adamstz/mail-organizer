@@ -45,7 +45,7 @@ class QueryClassifier:
         logger.info("[QUERY CLASSIFIER] ========== Starting query classification ==========")
         logger.info("[QUERY CLASSIFIER] Question: '%s'", question)
         logger.info("[QUERY CLASSIFIER] Chat history length: %d", len(chat_history) if chat_history else 0)
-        
+
         # Check if this is a classification query using centralized module first
         if is_classification_query(question):
             logger.info("[QUERY CLASSIFIER] ✓ Detected as 'classification' via is_classification_query()")
@@ -70,15 +70,15 @@ class QueryClassifier:
 
             classification_prompt = QUERY_CLASSIFICATION_PROMPT.replace("{question}", question)
             classification_prompt = classification_prompt.replace("{chat_context}", chat_context)
-            
+
             logger.info("[QUERY CLASSIFIER] ========== Sending prompt to LLM ==========")
             logger.info("[QUERY CLASSIFIER] Full prompt:\n%s", classification_prompt)
-            
+
             classification = self._call_llm_simple(classification_prompt).strip().lower()
-            
+
             logger.info("[QUERY CLASSIFIER] ========== LLM Response Received ==========")
             logger.info("[QUERY CLASSIFIER] Raw LLM response: '%s'", classification)
-            
+
             detected_type = self._parse_classification(classification)
 
             logger.info("[QUERY CLASSIFIER] ========== Classification Result ==========")
@@ -118,13 +118,13 @@ class QueryClassifier:
             Normalized query type string
         """
         logger.debug("[QUERY CLASSIFIER] Parsing classification: '%s'", classification)
-        
+
         # Clean up the response - remove common prefixes and suffixes
         cleaned = classification.lower().strip()
-        
+
         # Remove common LLM preambles
         prefixes_to_remove = [
-            'the answer is', 'answer is', 'classification:', 
+            'the answer is', 'answer is', 'classification:',
             'type:', 'the type is', 'this is a', 'this is',
             'i would classify this as', 'i classify this as'
         ]
@@ -132,13 +132,13 @@ class QueryClassifier:
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):].strip()
                 logger.debug("[QUERY CLASSIFIER] Removed prefix '%s': '%s'", prefix, cleaned)
-        
+
         # Get first word/phrase (handle hyphenated types)
         words = cleaned.split()
         first_word = words[0] if words else ''
-        
+
         logger.debug("[QUERY CLASSIFIER] Extracted first word: '%s'", first_word)
-        
+
         # Clean up punctuation
         first_word = first_word.strip('.,!?":;()[]{}')
         logger.debug("[QUERY CLASSIFIER] After punctuation cleanup: '%s'", first_word)
@@ -151,7 +151,7 @@ class QueryClassifier:
         if first_word in self.VALID_TYPES:
             logger.debug("[QUERY CLASSIFIER] ✓ Matched valid type: %s", first_word)
             return first_word
-        
+
         # Try to find valid type anywhere in the response
         logger.debug("[QUERY CLASSIFIER] First word not in valid types, searching response...")
         for valid_type in self.VALID_TYPES:

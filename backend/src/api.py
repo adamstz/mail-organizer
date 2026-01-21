@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import logging
 import asyncio
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime
 import os
 
@@ -16,14 +17,23 @@ from .auth import (
     get_google_auth_url,
     exchange_code_for_tokens,
     get_current_user,
-    require_auth,
     create_jwt_token,
-    JWT_COOKIE_NAME,
     AuthenticatedUser,
 )
 from .auth.middleware import set_auth_cookie, clear_auth_cookie
 
-app = FastAPI(title="organize-mail backend")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events."""
+    # Startup
+    storage.init_db()
+    logging.info("Database initialized")
+    yield
+    # Shutdown (nothing needed currently)
+
+
+app = FastAPI(title="organize-mail backend", lifespan=lifespan)
 
 # Allow CORS from common dev server origins used by Vite.
 app.add_middleware(
@@ -33,13 +43,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup."""
-    storage.init_db()
-    logging.info("Database initialized")
 
 
 # Log buffer for real-time viewing
@@ -117,85 +120,84 @@ async def auth_login(
     user: Optional[AuthenticatedUser] = Depends(get_current_user)
 ):
     """Redirect to Google OAuth consent screen or create session if tokens exist.
-    
+
     This endpoint checks for existing valid OAuth tokens before redirecting to Google:
     1. If user has valid JWT session → redirect to frontend
     2. If user has valid OAuth tokens in DB → create JWT session and redirect
     3. If user has expired OAuth tokens → refresh them, create session, redirect
     4. Otherwise → redirect to Google OAuth consent screen
-    
+
     Args:
         redirect_url: Optional URL to redirect to after successful auth (stored in state)
         user: Current authenticated user (if any)
     """
     logger.info("Starting OAuth login flow")
-    
+
     try:
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         target_redirect = redirect_url or frontend_url
-        
+
         # Check if user already has a valid JWT session
         if user:
             logger.info(f"User {user.email} already has valid JWT session, redirecting to frontend")
             return RedirectResponse(url=target_redirect, status_code=302)
-        
+
         # Check if we can find OAuth tokens in the database
         # For single-user deployments, get the authenticated email
         authenticated_email = storage.get_authenticated_email()
-        
+
         if authenticated_email:
             logger.info(f"Found authenticated user in database: {authenticated_email}")
-            
+
             # Get stored OAuth tokens
             tokens_data = storage.get_oauth_tokens(authenticated_email)
-            
+
             if tokens_data:
                 from datetime import datetime, timezone
-                
-                access_token = tokens_data.get("access_token")
+
                 refresh_token = tokens_data.get("refresh_token")
                 token_expiry = tokens_data.get("token_expiry")
-                
+
                 logger.info(f"Found OAuth tokens for {authenticated_email}, checking expiry")
-                
+
                 # Check if access token is still valid
                 now = datetime.now(timezone.utc)
-                
+
                 if token_expiry and token_expiry > now:
                     # Token is still valid, create JWT session and redirect
                     logger.info(f"Access token still valid until {token_expiry}, creating JWT session")
-                    
+
                     jwt_token = create_jwt_token(authenticated_email)
                     response = RedirectResponse(url=target_redirect, status_code=302)
                     set_auth_cookie(response, jwt_token)
-                    
+
                     return response
-                
+
                 elif refresh_token:
                     # Access token expired, but we have a refresh token
                     logger.info(f"Access token expired, attempting refresh for {authenticated_email}")
-                    
+
                     try:
                         from .auth.oauth import refresh_access_token
-                        
+
                         new_access_token, new_expiry = await refresh_access_token(refresh_token)
-                        
+
                         # Update stored tokens
                         storage.update_access_token(
                             email=authenticated_email,
                             access_token=new_access_token,
                             token_expiry=new_expiry
                         )
-                        
+
                         logger.info(f"Successfully refreshed access token for {authenticated_email}")
-                        
+
                         # Create JWT session and redirect
                         jwt_token = create_jwt_token(authenticated_email)
                         response = RedirectResponse(url=target_redirect, status_code=302)
                         set_auth_cookie(response, jwt_token)
-                        
+
                         return response
-                        
+
                     except Exception as refresh_error:
                         logger.warning(
                             f"Failed to refresh token for {authenticated_email}: {refresh_error}. "
@@ -204,12 +206,12 @@ async def auth_login(
                         # Fall through to OAuth flow below
                 else:
                     logger.info(f"No refresh token available for {authenticated_email}, need full OAuth")
-        
+
         # No valid tokens found, proceed with full OAuth flow
         logger.info("No valid tokens found, redirecting to Google OAuth consent screen")
         auth_url = get_google_auth_url(state=redirect_url)
         return RedirectResponse(url=auth_url)
-        
+
     except ValueError as e:
         logger.error(f"OAuth configuration error: {e}")
         raise HTTPException(
@@ -221,16 +223,16 @@ async def auth_login(
 @app.get("/api/auth/callback")
 async def auth_callback(code: str = Query(...), state: Optional[str] = Query(None)):
     """Handle OAuth callback from Google.
-    
+
     Exchanges the authorization code for tokens, stores them,
     and sets a JWT cookie for the session.
     """
     logger.info("Received OAuth callback")
-    
+
     try:
         # Exchange code for tokens
         tokens = await exchange_code_for_tokens(code)
-        
+
         # Store tokens in database
         storage.save_oauth_tokens(
             email=tokens.email,
@@ -238,16 +240,16 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
             refresh_token=tokens.refresh_token,
             token_expiry=tokens.token_expiry,
         )
-        
+
         logger.info(f"OAuth tokens stored for user: {tokens.email}")
-        
+
         # Create JWT for session
         jwt_token = create_jwt_token(tokens.email)
-        
+
         # Determine redirect URL
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         redirect_url = frontend_url
-        
+
         # Parse state parameter to extract original redirect URL if present
         if state:
             # If state contains /api/auth/login, extract the redirect_url param from it
@@ -265,7 +267,7 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
             else:
                 # Use state directly if it doesn't contain the login endpoint
                 redirect_url = state
-        
+
         # Validate redirect URL to prevent open redirects
         # Only allow redirects to the frontend URL or localhost variants
         allowed_hosts = ["localhost", "127.0.0.1"]
@@ -277,15 +279,15 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
                 redirect_url = frontend_url
         except Exception:
             redirect_url = frontend_url
-        
+
         logger.info(f"Redirecting to: {redirect_url}")
-        
+
         # Create redirect response with auth cookie
         response = RedirectResponse(url=redirect_url, status_code=302)
         set_auth_cookie(response, jwt_token)
-        
+
         return response
-        
+
     except ValueError as e:
         logger.error(f"OAuth callback error: {e}")
         # Redirect to frontend with error
@@ -297,7 +299,7 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
 @app.get("/api/auth/status")
 async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_user)):
     """Check authentication status.
-    
+
     Returns the current user's email if authenticated, or null if not.
     """
     if user:
@@ -314,7 +316,7 @@ async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_us
 @app.post("/api/auth/logout")
 async def auth_logout(response: Response, user: Optional[AuthenticatedUser] = Depends(get_current_user)):
     """Log out by clearing the auth cookie.
-    
+
     Optionally also removes stored tokens from database.
     """
     if user:
@@ -324,10 +326,10 @@ async def auth_logout(response: Response, user: Optional[AuthenticatedUser] = De
             logger.info(f"Deleted OAuth tokens for user: {user.email}")
         except Exception as e:
             logger.warning(f"Failed to delete tokens from database: {e}")
-    
+
     # Clear the auth cookie
     clear_auth_cookie(response)
-    
+
     return {"status": "logged_out"}
 
 
@@ -557,7 +559,6 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
         logger.info(f"[MIME EXTRACTION] Found {len(html_parts)} HTML part(s) with sizes: {[len(p) for p in html_parts]}")
         longest = max(html_parts, key=len)
         logger.info(f"[MIME EXTRACTION] Selected longest HTML: {len(longest)} chars")
-
 
         return longest
 

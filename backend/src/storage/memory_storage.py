@@ -320,7 +320,7 @@ class InMemoryStorage(StorageBackend):
     # =========================================================================
     # OAuth Token Storage Methods (in-memory for testing)
     # =========================================================================
-    
+
     def __init_oauth_storage(self):
         """Initialize OAuth storage if not already done."""
         if not hasattr(self, '_oauth_tokens'):
