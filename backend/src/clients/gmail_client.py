@@ -21,10 +21,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GMAIL_SCOPES: Sequence[str] = (
     # Read-only access will not let us modify labels or ack history. We default
-    # to readonly so downstream code won't attempt to modify messages unless
-    # explicitly changed. Use gmail.modify only when you need to change labels
-    # or state.
-    "https://www.googleapis.com/auth/gmail.readonly",
+    # to modify to support trashing messages. Use gmail.readonly only when you
+    # explicitly don't need to modify messages.
+    "https://www.googleapis.com/auth/gmail.modify",
 )
 
 
@@ -297,4 +296,58 @@ def register_watch(
     if label_ids:
         body["labelIds"] = label_ids
     return gmail_service.users().watch(userId=user_id, body=body).execute()
+
+
+def trash_message(
+    gmail_service: Resource,
+    message_id: str,
+    *,
+    user_id: str = "me",
+) -> dict:
+    """Move a message to the trash.
+
+    The message can be recovered from the trash within 30 days.
+
+    Args:
+        gmail_service: Authenticated Gmail API client
+        message_id: The ID of the message to trash
+        user_id: The user's email address or 'me' for authenticated user
+
+    Returns:
+        The API response containing the trashed message metadata
+    """
+    messages_resource = gmail_service.users().messages()
+    return messages_resource.trash(userId=user_id, id=message_id).execute()
+
+
+def batch_trash_messages(
+    gmail_service: Resource,
+    message_ids: List[str],
+    *,
+    user_id: str = "me",
+) -> dict:
+    """Move multiple messages to the trash using batch modification.
+
+    Uses Gmail's batchModify API to efficiently trash multiple messages
+    in a single request.
+
+    Args:
+        gmail_service: Authenticated Gmail API client
+        message_ids: List of message IDs to trash
+        user_id: The user's email address or 'me' for authenticated user
+
+    Returns:
+        Empty dict on success (batchModify returns no content)
+    """
+    if not message_ids:
+        return {}
+
+    messages_resource = gmail_service.users().messages()
+    body = {
+        "ids": message_ids,
+        "addLabelIds": ["TRASH"],
+        "removeLabelIds": ["INBOX"],
+    }
+    messages_resource.batchModify(userId=user_id, body=body).execute()
+    return {"trashed": len(message_ids)}
 

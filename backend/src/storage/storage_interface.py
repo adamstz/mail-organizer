@@ -23,6 +23,28 @@ class StorageBackend:
         """Get a single message by ID."""
         raise NotImplementedError
 
+    def delete_message(self, message_id: str) -> bool:
+        """Delete a single message and its related data (classifications, embeddings).
+
+        Args:
+            message_id: The ID of the message to delete
+
+        Returns:
+            True if the message was deleted, False if not found
+        """
+        raise NotImplementedError
+
+    def delete_messages(self, message_ids: List[str]) -> int:
+        """Delete multiple messages and their related data.
+
+        Args:
+            message_ids: List of message IDs to delete
+
+        Returns:
+            Number of messages actually deleted
+        """
+        raise NotImplementedError
+
     def get_unclassified_message_ids(self) -> List[str]:
         """Return IDs of messages that haven't been classified yet."""
         raise NotImplementedError

@@ -96,6 +96,26 @@ class InMemoryStorage(StorageBackend):
     def get_message_ids(self) -> List[str]:
         return list(self._messages.keys())
 
+    def delete_message(self, message_id: str) -> bool:
+        """Delete a single message and its classifications."""
+        if message_id not in self._messages:
+            return False
+        del self._messages[message_id]
+        # Also delete classifications
+        if message_id in self._classifications:
+            del self._classifications[message_id]
+        if message_id in self._latest_classification:
+            del self._latest_classification[message_id]
+        return True
+
+    def delete_messages(self, message_ids: List[str]) -> int:
+        """Delete multiple messages and their classifications."""
+        deleted = 0
+        for message_id in message_ids:
+            if self.delete_message(message_id):
+                deleted += 1
+        return deleted
+
     def get_message_by_id(self, message_id: str) -> Optional[MailMessage]:
         """Get a single message by ID with its latest classification."""
         msg = self._messages.get(message_id)

@@ -53,10 +53,19 @@ class SyncProgress:
 class SyncManager:
     """Manages synchronization operations"""
 
+    # Cache duration for Gmail sync counts (in seconds)
+    GMAIL_CACHE_TTL = 60  # Only check Gmail every 60 seconds
+
     def __init__(self):
         self.pull_progress = SyncProgress("pull")
         self.classify_progress = SyncProgress("classify")
         self._lock = threading.Lock()
+        # Cache for Gmail sync counts to avoid repeated API calls
+        self._gmail_cache: Dict[str, Any] = {
+            "gmail_total": None,
+            "not_synced": 0,
+            "last_updated": None,
+        }
 
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status including counts and progress"""
@@ -98,12 +107,22 @@ class SyncManager:
     def _get_gmail_sync_counts(self, existing_ids: set) -> tuple[Optional[int], int]:
         """Get Gmail INBOX count and calculate how many messages need syncing.
 
+        Uses caching to avoid repeated Gmail API calls. Cache is invalidated
+        after GMAIL_CACHE_TTL seconds or when a pull operation completes.
+
         Args:
             existing_ids: Set of message IDs already in the database
 
         Returns:
             Tuple of (total_gmail_count, not_synced_count)
         """
+        # Check if we have a valid cached result
+        now = datetime.now(timezone.utc)
+        if self._gmail_cache["last_updated"] is not None:
+            cache_age = (now - self._gmail_cache["last_updated"]).total_seconds()
+            if cache_age < self.GMAIL_CACHE_TTL:
+                logger.debug(f"Using cached Gmail sync counts (age: {cache_age:.1f}s)")
+                return self._gmail_cache["gmail_total"], self._gmail_cache["not_synced"]
         try:
             # Get authenticated user's email and tokens from database
             email = storage.get_authenticated_email()
@@ -129,7 +148,7 @@ class SyncManager:
             service = build_gmail_service(credentials=creds)
 
             # List all message IDs from INBOX (just IDs, not full messages)
-            logger.debug("Fetching Gmail INBOX message IDs for sync status")
+            logger.info("Fetching Gmail INBOX message IDs for sync status (cache miss)")
             gmail_ids = []
             messages_resource = service.users().messages()
             request = messages_resource.list(userId="me", labelIds=["INBOX"], maxResults=500)
@@ -149,6 +168,11 @@ class SyncManager:
             not_synced_count = len(missing_ids)
 
             logger.debug(f"Gmail sync status: {total_count} total, {not_synced_count} not synced")
+
+            # Cache the results
+            self._gmail_cache["gmail_total"] = total_count
+            self._gmail_cache["not_synced"] = not_synced_count
+            self._gmail_cache["last_updated"] = datetime.now(timezone.utc)
 
             return total_count, not_synced_count
 
@@ -275,6 +299,8 @@ class SyncManager:
 
             self.pull_progress.status = "completed"
             self.pull_progress.completed_at = datetime.now(timezone.utc)
+            # Invalidate Gmail cache so next status check gets fresh counts
+            self._gmail_cache["last_updated"] = None
             logger.info(f"Pull completed: {self.pull_progress.processed} messages pulled, {self.pull_progress.errors} errors")
 
         except Exception as e:
@@ -282,6 +308,8 @@ class SyncManager:
             self.pull_progress.status = "error"
             self.pull_progress.error_message = str(e)
             self.pull_progress.completed_at = datetime.now(timezone.utc)
+            # Invalidate Gmail cache on error too
+            self._gmail_cache["last_updated"] = None
 
     def start_classify(self) -> bool:
         """Start classifying and embedding messages in background"""

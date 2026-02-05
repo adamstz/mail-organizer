@@ -5,7 +5,13 @@ mock the storage layer to provide deterministic responses. They verify
 that the endpoint returns JSON with the expected shape and status code.
 """
 
+import os
 from fastapi.testclient import TestClient
+
+# Set required environment variables before imports
+os.environ.setdefault("JWT_SECRET", "test_secret_key_for_unit_tests")
+os.environ.setdefault("GOOGLE_CLIENT_ID", "test_client_id")
+os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test_client_secret")
 
 
 def test_get_messages_returns_json(monkeypatch):
@@ -19,8 +25,13 @@ def test_get_messages_returns_json(monkeypatch):
 
     # Import app after patching to ensure it picks up the monkeypatch if needed
     from src.api import app
+    from src.auth.middleware import create_jwt_token, JWT_COOKIE_NAME
 
     client = TestClient(app)
+    # Add authentication
+    token = create_jwt_token("testuser@gmail.com")
+    client.cookies.set(JWT_COOKIE_NAME, token)
+
     r = client.get("/messages?limit=10")
     assert r.status_code == 200
     assert r.headers.get("content-type", "").startswith("application/json")

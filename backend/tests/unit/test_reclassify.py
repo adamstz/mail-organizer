@@ -1,12 +1,29 @@
 """Tests for the reclassify endpoint and update_message_latest_classification functionality."""
 
+import os
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
+
+# Set required environment variables before imports
+os.environ.setdefault("JWT_SECRET", "test_secret_key_for_unit_tests")
+os.environ.setdefault("GOOGLE_CLIENT_ID", "test_client_id")
+os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test_client_secret")
+os.environ.setdefault("LLM_PROVIDER", "rules")
 
 from src.models.message import MailMessage
 from src.models.classification_record import ClassificationRecord
 from src.storage.memory_storage import InMemoryStorage
+
+
+def create_authenticated_client(app):
+    """Create a test client with authentication."""
+    from src.auth.middleware import create_jwt_token, JWT_COOKIE_NAME
+    client = TestClient(app)
+    token = create_jwt_token("testuser@gmail.com")
+    client.cookies.set(JWT_COOKIE_NAME, token)
+    return client
 
 
 class TestUpdateMessageLatestClassification:
@@ -117,7 +134,6 @@ class TestReclassifyEndpoint:
     def test_reclassify_creates_new_classification(self, mock_storage, test_message):
         """Test that reclassify creates a new classification record."""
         from src.api import app
-        from fastapi.testclient import TestClient
         from src import storage as storage_module
         
         # Set the storage backend to our mock before the API uses it
@@ -134,7 +150,7 @@ class TestReclassifyEndpoint:
             mock_processor.model = "gemma:7b"
             
             with patch('src.api.LLMProcessor', return_value=mock_processor):
-                client = TestClient(app)
+                client = create_authenticated_client(app)
                 
                 # Make reclassify request
                 response = client.post(
@@ -160,7 +176,6 @@ class TestReclassifyEndpoint:
     def test_reclassify_updates_message_latest_classification(self, mock_storage, test_message):
         """Test that reclassify updates the message's latest_classification_id."""
         from src.api import app
-        from fastapi.testclient import TestClient
         from src import storage as storage_module
         
         # Create initial classification
@@ -195,7 +210,7 @@ class TestReclassifyEndpoint:
             mock_processor.model = "gemma:7b"
             
             with patch('src.api.LLMProcessor', return_value=mock_processor):
-                client = TestClient(app)
+                client = create_authenticated_client(app)
                 
                 # Make reclassify request
                 response = client.post(
@@ -220,7 +235,6 @@ class TestReclassifyEndpoint:
     def test_reclassify_extracts_full_body(self, mock_storage):
         """Test that reclassify extracts the full body from Gmail payload."""
         from src.api import app
-        from fastapi.testclient import TestClient
         from src import storage as storage_module
         
         # Create message with multipart payload
@@ -263,7 +277,7 @@ class TestReclassifyEndpoint:
             mock_processor.model = "gemma:2b"
             
             with patch('src.api.LLMProcessor', return_value=mock_processor):
-                client = TestClient(app)
+                client = create_authenticated_client(app)
                 
                 response = client.post(
                     f"/messages/{msg.id}/reclassify",
@@ -286,7 +300,6 @@ class TestReclassifyEndpoint:
     def test_reclassify_with_different_models(self, mock_storage, test_message):
         """Test that reclassify respects the model parameter."""
         from src.api import app
-        from fastapi.testclient import TestClient
         from src import storage as storage_module
         
         storage_module.set_storage_backend(mock_storage)
@@ -300,7 +313,7 @@ class TestReclassifyEndpoint:
             }
             
             with patch('src.api.LLMProcessor', return_value=mock_processor):
-                client = TestClient(app)
+                client = create_authenticated_client(app)
                 
                 # Reclassify with gemma:7b
                 response = client.post(
@@ -324,7 +337,6 @@ class TestGetModelsEndpoint:
     def test_get_models_returns_available_models(self):
         """Test that /models endpoint returns list of available Ollama models."""
         from src.api import app
-        from fastapi.testclient import TestClient
         import json
         from io import BytesIO
         
@@ -342,7 +354,7 @@ class TestGetModelsEndpoint:
         mock_response.__exit__ = MagicMock(return_value=False)
         
         with patch('urllib.request.urlopen', return_value=mock_response):
-            client = TestClient(app)
+            client = create_authenticated_client(app)
             response = client.get("/models")
             
             assert response.status_code == 200
@@ -356,11 +368,10 @@ class TestGetModelsEndpoint:
     def test_get_models_handles_ollama_unavailable(self):
         """Test that /models endpoint handles Ollama being unavailable."""
         from src.api import app
-        from fastapi.testclient import TestClient
         
         # Mock connection error
         with patch('urllib.request.urlopen', side_effect=Exception("Connection refused")):
-            client = TestClient(app)
+            client = create_authenticated_client(app)
             response = client.get("/models")
             
             # The endpoint catches exceptions and returns 200 with empty models and error

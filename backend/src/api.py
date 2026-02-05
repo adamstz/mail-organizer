@@ -19,6 +19,7 @@ from .auth import (
     get_current_user,
     create_jwt_token,
     AuthenticatedUser,
+    require_auth,
 )
 from .auth.middleware import set_auth_cookie, clear_auth_cookie
 
@@ -361,8 +362,11 @@ async def websocket_logs(websocket: WebSocket):
 
 
 @app.get("/api/logs")
-async def get_logs(limit: int = 100):
-    """Get recent logs as JSON array."""
+async def get_logs(
+    limit: int = 100,
+    user: AuthenticatedUser = Depends(require_auth)
+):
+    """Get recent logs as JSON array. Requires authentication."""
     logs = list(log_buffer)
     logger.debug(f"Logs requested: returning {min(limit, len(logs))} of {len(logs)} entries")
     return logs[-limit:] if limit < len(logs) else logs
@@ -375,8 +379,11 @@ class FrontendLogRequest(BaseModel):
 
 
 @app.post("/api/frontend-log")
-async def receive_frontend_log(log_entry: FrontendLogRequest):
-    """Receive log entries from the frontend and add them to the log buffer."""
+async def receive_frontend_log(
+    log_entry: FrontendLogRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+):
+    """Receive log entries from the frontend and add them to the log buffer. Requires authentication."""
     try:
         # Create a log entry that matches our format
         log_data = {
@@ -410,8 +417,12 @@ async def receive_frontend_log(log_entry: FrontendLogRequest):
 
 
 @app.get("/messages")
-async def get_messages(limit: int = 50, offset: int = 0) -> dict:
-    """Return messages from storage with HTML bodies included.
+async def get_messages(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Return messages from storage with HTML bodies included. Requires authentication.
 
     Query params:
         - limit: max messages to return (default 50)
@@ -481,8 +492,11 @@ async def get_messages(limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/messages/{message_id}")
-async def get_message(message_id: str) -> dict:
-    """Get a single message by ID with its classification data."""
+async def get_message(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get a single message by ID with its classification data. Requires authentication."""
     logger.debug(f"GET /messages/{message_id}")
     msg = storage.get_message_by_id(message_id)
     if not msg:
@@ -490,6 +504,83 @@ async def get_message(message_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Message not found")
     logger.debug(f"Found message: {msg.subject[:50]}")
     return msg.to_dict()
+
+
+class BatchDeleteRequest(BaseModel):
+    """Request body for batch delete operation."""
+    ids: List[str]
+
+
+# NOTE: Batch route must come BEFORE the individual message route to avoid
+# /api/messages/batch being matched by /api/messages/{message_id}
+@app.delete("/api/messages/batch")
+async def batch_delete_messages(
+    request: BatchDeleteRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Delete multiple messages (move to Gmail trash and remove from local storage).
+    
+    Requires authentication.
+    """
+    message_ids = request.ids
+    logger.info(f"DELETE /api/messages/batch - {len(message_ids)} messages")
+
+    if not message_ids:
+        return {"deleted": 0, "failed": []}
+
+    failed_ids = []
+
+    # First, try to batch trash in Gmail
+    try:
+        from .clients.gmail_client import build_gmail_service, batch_trash_messages as gmail_batch_trash
+        gmail_service = build_gmail_service()
+        gmail_batch_trash(gmail_service, message_ids)
+        logger.info(f"Batch trashed {len(message_ids)} messages in Gmail")
+    except Exception as e:
+        logger.warning(f"Could not batch trash messages in Gmail: {e}")
+        # Continue to delete from local storage even if Gmail fails
+
+    # Delete from local storage
+    deleted_count = storage.delete_messages(message_ids)
+    logger.info(f"Deleted {deleted_count} messages from local storage")
+
+    return {
+        "deleted": deleted_count,
+        "failed": failed_ids,
+        "total_requested": len(message_ids),
+    }
+
+
+@app.delete("/api/messages/{message_id}")
+async def delete_message(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Delete a single message (move to Gmail trash and remove from local storage).
+    
+    Requires authentication.
+    """
+    logger.info(f"DELETE /api/messages/{message_id}")
+
+    # First, try to trash in Gmail
+    try:
+        from .clients.gmail_client import build_gmail_service, trash_message as gmail_trash_message
+        gmail_service = build_gmail_service()
+        gmail_trash_message(gmail_service, message_id)
+        logger.info(f"Message {message_id} moved to Gmail trash")
+    except Exception as e:
+        logger.warning(f"Could not trash message in Gmail (may be offline or already deleted): {e}")
+        # Continue to delete from local storage even if Gmail fails
+
+    # Delete from local storage
+    deleted = storage.delete_message(message_id)
+    if not deleted:
+        logger.warning(f"Message not found in local storage: {message_id}")
+        # Don't raise 404 since we may have already trashed it in Gmail
+        return {"message_id": message_id, "deleted": False, "detail": "Message not found in local storage"}
+
+    logger.info(f"Message {message_id} deleted from local storage")
+    return {"message_id": message_id, "deleted": True}
 
 
 def _extract_html_from_payload(payload: dict, logger) -> str:
@@ -567,8 +658,11 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
 
 
 @app.get("/messages/{message_id}/body")
-async def get_message_body(message_id: str) -> dict:
-    """Get email body HTML and metadata.
+async def get_message_body(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get email body HTML and metadata. Requires authentication.
 
     Returns raw HTML extracted from the email payload.
     Frontend is responsible for sanitization with DOMPurify.
@@ -639,8 +733,11 @@ async def get_message_body(message_id: str) -> dict:
 
 
 @app.get("/messages/{message_id}/classifications")
-async def get_message_classifications(message_id: str) -> List[dict]:
-    """Get all classification records for a message (historical)."""
+async def get_message_classifications(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> List[dict]:
+    """Get all classification records for a message (historical). Requires authentication."""
     # Verify message exists
     msg = storage.get_message_by_id(message_id)
     if not msg:
@@ -651,8 +748,11 @@ async def get_message_classifications(message_id: str) -> List[dict]:
 
 
 @app.get("/messages/{message_id}/classification/latest")
-async def get_latest_classification(message_id: str) -> Optional[dict]:
-    """Get the most recent classification for a message."""
+async def get_latest_classification(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> Optional[dict]:
+    """Get the most recent classification for a message. Requires authentication."""
     logger.debug(f"GET /messages/{message_id}/classification/latest")
     # Verify message exists
     msg = storage.get_message_by_id(message_id)
@@ -669,8 +769,10 @@ async def get_latest_classification(message_id: str) -> Optional[dict]:
 
 
 @app.get("/stats")
-async def get_stats() -> dict:
-    """Get classification statistics."""
+async def get_stats(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get classification statistics. Requires authentication."""
     logger.info("GET /stats - calculating statistics")
     all_message_ids = storage.get_message_ids()
     unclassified_ids = storage.get_unclassified_message_ids()
@@ -711,8 +813,11 @@ async def get_stats() -> dict:
 
 
 @app.get("/labels")
-async def get_labels(min_count: int = 3) -> dict:
-    """Get all unique classification labels with their counts.
+async def get_labels(
+    min_count: int = 3,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get all unique classification labels with their counts. Requires authentication.
 
     Args:
         min_count: Minimum number of occurrences to include a label (default: 3)
@@ -734,8 +839,13 @@ async def get_labels(min_count: int = 3) -> dict:
 
 
 @app.get("/messages/filter/priority/{priority}")
-async def filter_by_priority(priority: str, limit: int = 50, offset: int = 0) -> dict:
-    """Get messages filtered by priority (high, medium, low, unclassified)."""
+async def filter_by_priority(
+    priority: str,
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get messages filtered by priority (high, medium, low, unclassified). Requires authentication."""
     import time
     start_time = time.time()
     logger.info(f"GET /messages/filter/priority/{priority} - limit={limit}, offset={offset}")
@@ -759,8 +869,13 @@ async def filter_by_priority(priority: str, limit: int = 50, offset: int = 0) ->
 
 
 @app.get("/messages/filter/label/{label}")
-async def filter_by_label(label: str, limit: int = 50, offset: int = 0) -> dict:
-    """Get messages filtered by classification label."""
+async def filter_by_label(
+    label: str,
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get messages filtered by classification label. Requires authentication."""
     import time
     start_time = time.time()
     logger.info(f"GET /messages/filter/label/{label} - limit={limit}, offset={offset}")
@@ -780,8 +895,12 @@ async def filter_by_label(label: str, limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/messages/filter/classified")
-async def filter_classified(limit: int = 50, offset: int = 0) -> dict:
-    """Get only classified messages."""
+async def filter_classified(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get only classified messages. Requires authentication."""
     logger.info(f"GET /messages/filter/classified - limit={limit}, offset={offset}")
     # Use database-level filtering with index on latest_classification_id
     messages, total = storage.list_classified_messages(limit=limit, offset=offset)
@@ -796,8 +915,12 @@ async def filter_classified(limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/messages/filter/unclassified")
-async def filter_unclassified(limit: int = 50, offset: int = 0) -> dict:
-    """Get only unclassified messages."""
+async def filter_unclassified(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get only unclassified messages. Requires authentication."""
     logger.info(f"GET /messages/filter/unclassified - limit={limit}, offset={offset}")
     # Use database-level filtering
     messages, total = storage.list_unclassified_messages(limit=limit, offset=offset)
@@ -817,9 +940,10 @@ async def filter_advanced(
     labels: Optional[str] = None,  # Comma-separated list of labels
     status: Optional[str] = None,  # 'classified', 'unclassified', or 'all'
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
-    """Advanced filtering with multiple criteria (priority, labels, status).
+    """Advanced filtering with multiple criteria (priority, labels, status). Requires authentication.
 
     Query params:
         - priority: 'high', 'normal', or 'low'
@@ -947,8 +1071,10 @@ async def filter_advanced(
 
 
 @app.get("/models")
-async def list_models() -> dict:
-    """List available LLM models from Ollama."""
+async def list_models(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """List available LLM models from Ollama. Requires authentication."""
     import json
     import os
     import urllib.request
@@ -975,8 +1101,11 @@ class SetModelRequest(BaseModel):
 
 
 @app.post("/api/set-model")
-async def set_model(request: SetModelRequest) -> dict:
-    """Set the active LLM model for all subsequent operations."""
+async def set_model(
+    request: SetModelRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Set the active LLM model for all subsequent operations. Requires authentication."""
     import os
 
     try:
@@ -993,8 +1122,10 @@ async def set_model(request: SetModelRequest) -> dict:
 
 
 @app.get("/api/current-model")
-async def get_current_model() -> dict:
-    """Get the currently active LLM model."""
+async def get_current_model(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get the currently active LLM model. Requires authentication."""
     import os
 
     current_model = os.getenv("LLM_MODEL", "")
@@ -1007,8 +1138,10 @@ async def get_current_model() -> dict:
 
 
 @app.post("/api/ollama/start")
-async def start_ollama() -> dict:
-    """Start the Ollama service."""
+async def start_ollama(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Start the Ollama service. Requires authentication."""
     import subprocess
     import os
 
@@ -1035,8 +1168,12 @@ class ReclassifyRequest(BaseModel):
 
 
 @app.post("/messages/{message_id}/reclassify")
-async def reclassify_message(message_id: str, request: ReclassifyRequest) -> dict:
-    """Reclassify a message using the specified model."""
+async def reclassify_message(
+    message_id: str,
+    request: ReclassifyRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Reclassify a message using the specified model. Requires authentication."""
     import os
     import logging
 
@@ -1190,8 +1327,10 @@ async def generate_session_title(chat_session_id: str, first_message: str):
 
 
 @app.get("/api/sync-status")
-async def get_sync_status() -> dict:
-    """Get current sync status including Gmail vs DB counts and progress."""
+async def get_sync_status(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get current sync status including Gmail vs DB counts and progress. Requires authentication."""
     logger.info("GET /api/sync-status")
     sync_manager = get_sync_manager()
     status = sync_manager.get_sync_status()
@@ -1200,8 +1339,10 @@ async def get_sync_status() -> dict:
 
 
 @app.post("/api/sync/pull")
-async def sync_pull() -> dict:
-    """Start pulling new messages from Gmail INBOX."""
+async def sync_pull(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Start pulling new messages from Gmail INBOX. Requires authentication."""
     logger.info("POST /api/sync/pull - Starting pull operation")
     sync_manager = get_sync_manager()
 
@@ -1219,8 +1360,10 @@ async def sync_pull() -> dict:
 
 
 @app.post("/api/sync/classify")
-async def sync_classify() -> dict:
-    """Start classifying and embedding unclassified messages."""
+async def sync_classify(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Start classifying and embedding unclassified messages. Requires authentication."""
     logger.info("POST /api/sync/classify - Starting classify and embed operation")
     sync_manager = get_sync_manager()
 
@@ -1257,8 +1400,11 @@ class ChatSessionUpdateRequest(BaseModel):
 
 
 @app.post("/api/query")
-async def query_emails(request: QueryRequest) -> dict:
-    """Ask a question and get an answer based on email content.
+async def query_emails(
+    request: QueryRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Ask a question and get an answer based on email content. Requires authentication.
 
     This uses RAG (Retrieval-Augmented Generation):
     1. Converts your question to a vector embedding
@@ -1375,8 +1521,10 @@ async def query_emails(request: QueryRequest) -> dict:
 
 
 @app.get("/api/embedding_status")
-async def embedding_status() -> dict:
-    """Get statistics about embedding coverage.
+async def embedding_status(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get statistics about embedding coverage. Requires authentication.
 
     Returns how many emails have been embedded and are ready for semantic search.
     """
@@ -1422,8 +1570,11 @@ async def embedding_status() -> dict:
 
 # Chat session endpoints
 @app.post("/api/chat-sessions")
-async def create_chat_session(request: ChatSessionCreateRequest) -> dict:
-    """Create a new chat session."""
+async def create_chat_session(
+    request: ChatSessionCreateRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Create a new chat session. Requires authentication."""
     logger.info(f"Creating new chat session with title: {request.title}")
 
     from datetime import datetime, timezone
@@ -1440,8 +1591,12 @@ async def create_chat_session(request: ChatSessionCreateRequest) -> dict:
 
 
 @app.get("/api/chat-sessions")
-async def list_chat_sessions(limit: int = 50, offset: int = 0) -> dict:
-    """List all chat sessions ordered by most recent."""
+async def list_chat_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """List all chat sessions ordered by most recent. Requires authentication."""
     logger.info(f"Listing chat sessions: limit={limit}, offset={offset}")
 
     sessions = storage.list_chat_sessions(limit=limit, offset=offset)
@@ -1455,8 +1610,13 @@ async def list_chat_sessions(limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/api/chat-sessions/{chat_session_id}/messages")
-async def get_chat_session_messages(chat_session_id: str, limit: int = 100, offset: int = 0) -> dict:
-    """Get all messages for a specific chat session."""
+async def get_chat_session_messages(
+    chat_session_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get all messages for a specific chat session. Requires authentication."""
     logger.info(f"Getting messages for chat session {chat_session_id}: limit={limit}, offset={offset}")
 
     messages = storage.get_chat_session_messages(chat_session_id=chat_session_id, limit=limit, offset=offset)
@@ -1471,8 +1631,11 @@ async def get_chat_session_messages(chat_session_id: str, limit: int = 100, offs
 
 
 @app.delete("/api/chat-sessions/{chat_session_id}")
-async def delete_chat_session(chat_session_id: str) -> dict:
-    """Delete a chat session and all its messages."""
+async def delete_chat_session(
+    chat_session_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Delete a chat session and all its messages. Requires authentication."""
     logger.info(f"Deleting chat session {chat_session_id}")
 
     storage.delete_chat_session(chat_session_id=chat_session_id)
@@ -1484,8 +1647,12 @@ async def delete_chat_session(chat_session_id: str) -> dict:
 
 
 @app.patch("/api/chat-sessions/{chat_session_id}")
-async def update_chat_session(chat_session_id: str, request: ChatSessionUpdateRequest) -> dict:
-    """Update a chat session's title."""
+async def update_chat_session(
+    chat_session_id: str,
+    request: ChatSessionUpdateRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Update a chat session's title. Requires authentication."""
     logger.info(f"Updating chat session {chat_session_id} title to: {request.title}")
 
     storage.update_chat_session_title(chat_session_id=chat_session_id, title=request.title)

@@ -117,6 +117,22 @@ def count_classified_messages() -> int:
     return get_storage_backend().count_classified_messages()
 
 
+def delete_message(message_id: str) -> bool:
+    """Delete a single message and its classifications.
+
+    Returns True if the message was deleted, False if not found.
+    """
+    return get_storage_backend().delete_message(message_id)
+
+
+def delete_messages(message_ids: List[str]) -> int:
+    """Delete multiple messages and their classifications.
+
+    Returns the count of messages deleted.
+    """
+    return get_storage_backend().delete_messages(message_ids)
+
+
 def list_messages(limit: int = 100, offset: int = 0) -> List[MailMessage]:
     return get_storage_backend().list_messages(limit=limit, offset=offset)
 

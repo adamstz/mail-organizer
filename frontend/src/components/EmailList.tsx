@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   List,
   Paper,
@@ -6,9 +6,13 @@ import {
   Box,
   CircularProgress,
   Pagination,
+  Snackbar,
+  Alert,
+  Button,
 } from '@mui/material';
 import { Email } from '../types/email';
 import EmailItem from './EmailItem';
+import ConfirmDialog from './ConfirmDialog';
 import { parseBackendMessage } from '../utils/emailParser';
 import exampleEmails from '../test/exampleEmails';
 import { logger } from '../utils/logger';
@@ -22,9 +26,11 @@ interface EmailListProps {
   searchQuery?: string;
   sortOrder?: 'recent' | 'oldest';
   selectedModel?: string;
+  selectedIds?: Set<string>;
+  onSelectionChange?: (ids: Set<string>) => void;
 }
 
-const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOrder = 'recent', selectedModel = 'qwen2.5:7b' }) => {
+const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOrder = 'recent', selectedModel = 'qwen2.5:7b', selectedIds: externalSelectedIds, onSelectionChange }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [emails, setEmails] = useState<Email[]>(exampleEmails);
   const [loading, setLoading] = useState<boolean>(false);
@@ -33,6 +39,51 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
   const [totalCount, setTotalCount] = useState<number>(0);
   const [filterChangeIndicator, setFilterChangeIndicator] = useState<boolean>(false);
   const pageSize = 50;
+
+  // Selection state - use external if provided, otherwise internal
+  const [internalSelectedIds, setInternalSelectedIds] = useState<Set<string>>(new Set());
+  const selectedIds = externalSelectedIds ?? internalSelectedIds;
+
+  // Unified setter that handles both external callback and internal state
+  const updateSelectedIds = useCallback((updater: (prev: Set<string>) => Set<string>) => {
+    if (onSelectionChange) {
+      // External mode: compute new value and pass to callback
+      const currentIds = externalSelectedIds ?? new Set<string>();
+      const newIds = updater(currentIds);
+      onSelectionChange(newIds);
+    } else {
+      // Internal mode: use state setter directly
+      setInternalSelectedIds(updater);
+    }
+  }, [onSelectionChange, externalSelectedIds]);
+
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    ids: string[];
+    loading: boolean;
+  }>({ open: false, ids: [], loading: false });
+
+  // Undo snackbar state
+  const [undoSnackbar, setUndoSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    deletedEmails: Email[];
+    deletedIds: string[];
+    canUndo: boolean;
+  }>({ open: false, message: '', deletedEmails: [], deletedIds: [], canUndo: true });
+
+  // Refresh trigger for external delete events
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Listen for bulk delete events from toolbar
+  useEffect(() => {
+    const handleEmailsDeleted = () => {
+      setRefreshTrigger(prev => prev + 1);
+    };
+    window.addEventListener('emails-deleted', handleEmailsDeleted);
+    return () => window.removeEventListener('emails-deleted', handleEmailsDeleted);
+  }, []);
 
   // Show brief indicator when filters change
   useEffect(() => {
@@ -173,7 +224,7 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
     return () => {
       abortController.abort();
     };
-  }, [filters, searchQuery, sortOrder, page, selectedModel]);
+  }, [filters, searchQuery, sortOrder, page, selectedModel, refreshTrigger]);
 
   // Reset to page 1 when filter or search changes
   useEffect(() => {
@@ -184,8 +235,113 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
     setExpandedId(expandedId === id ? null : id);
   };
 
-  const handleDelete = (id: string): void => {
-    setEmails(emails.filter(email => email.id !== id));
+  // Toggle selection for a single email
+  const handleToggleSelect = useCallback((id: string): void => {
+    updateSelectedIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  }, [updateSelectedIds]);
+
+  // Open confirmation dialog for single delete
+  const handleDeleteClick = (id: string): void => {
+    setConfirmDialog({ open: true, ids: [id], loading: false });
+  };
+
+  // Perform the actual delete API call
+  const performDelete = async (ids: string[]): Promise<{ success: boolean; failedIds: string[] }> => {
+    try {
+      const response = await fetch('/api/messages/batch', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      return { success: true, failedIds: result.failed || [] };
+    } catch (err) {
+      logger.error('Delete failed:', err);
+      return { success: false, failedIds: ids };
+    }
+  };
+
+  // Handle confirmed delete (optimistic UI with undo)
+  const handleConfirmDelete = async (): Promise<void> => {
+    const idsToDelete = confirmDialog.ids;
+    setConfirmDialog(prev => ({ ...prev, loading: true }));
+
+    // Store emails for potential undo
+    const emailsToDelete = emails.filter(e => idsToDelete.includes(e.id));
+
+    // Optimistic update - remove immediately
+    setEmails(prev => prev.filter(e => !idsToDelete.includes(e.id)));
+    updateSelectedIds(prev => {
+      const newSet = new Set(prev);
+      idsToDelete.forEach(id => newSet.delete(id));
+      return newSet;
+    });
+    setTotalCount(prev => prev - idsToDelete.length);
+
+    // Close dialog
+    setConfirmDialog({ open: false, ids: [], loading: false });
+
+    // Show undo snackbar
+    setUndoSnackbar({
+      open: true,
+      message: idsToDelete.length === 1
+        ? 'Email moved to trash'
+        : `${idsToDelete.length} emails moved to trash`,
+      deletedEmails: emailsToDelete,
+      deletedIds: idsToDelete,
+      canUndo: true,
+    });
+
+    // Perform actual delete
+    const result = await performDelete(idsToDelete);
+
+    if (!result.success || result.failedIds.length > 0) {
+      // Restore failed items
+      const failedEmails = emailsToDelete.filter(e => result.failedIds.includes(e.id));
+      if (failedEmails.length > 0) {
+        setEmails(prev => [...failedEmails, ...prev]);
+        setTotalCount(prev => prev + failedEmails.length);
+        setUndoSnackbar(prev => ({
+          ...prev,
+          message: `Failed to delete ${failedEmails.length} email(s) — restored`,
+          canUndo: false,
+        }));
+      }
+    }
+  };
+
+  // Handle undo - this would need backend support for untrash
+  // For now, we just restore to UI (actual Gmail untrash not implemented)
+  const handleUndo = (): void => {
+    // Restore deleted emails to the list
+    setEmails(prev => [...undoSnackbar.deletedEmails, ...prev]);
+    setTotalCount(prev => prev + undoSnackbar.deletedEmails.length);
+    setUndoSnackbar({ open: false, message: '', deletedEmails: [], deletedIds: [], canUndo: true });
+    // Note: This only restores to UI. Backend untrash would require additional API
+    logger.info('Undo: Restored emails to UI (Gmail untrash not implemented)');
+  };
+
+  // Cancel delete dialog
+  const handleCancelDelete = (): void => {
+    setConfirmDialog({ open: false, ids: [], loading: false });
+  };
+
+  // Close undo snackbar
+  const handleCloseSnackbar = (): void => {
+    setUndoSnackbar(prev => ({ ...prev, open: false }));
   };
 
   const handleReclassify = async (id: string) => {
@@ -303,9 +459,11 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
               email={email}
               isExpanded={expandedId === email.id}
               onExpand={handleExpand}
-              onDelete={handleDelete}
+              onDelete={handleDeleteClick}
               onReclassify={handleReclassify}
               selectedModel={selectedModel}
+              isSelected={selectedIds.has(email.id)}
+              onToggleSelect={handleToggleSelect}
             />
           ))}
         </List>
@@ -323,6 +481,45 @@ const EmailList: React.FC<EmailListProps> = ({ filters, searchQuery = '', sortOr
           />
         </Box>
       )}
+
+      {/* Confirmation Dialog */}
+      <ConfirmDialog
+        open={confirmDialog.open}
+        title={confirmDialog.ids.length === 1 ? 'Delete Email?' : `Delete ${confirmDialog.ids.length} Emails?`}
+        message={
+          confirmDialog.ids.length === 1
+            ? 'This email will be moved to trash. You can recover it from Gmail\'s trash folder.'
+            : `These ${confirmDialog.ids.length} emails will be moved to trash. You can recover them from Gmail's trash folder.`
+        }
+        confirmText="Move to Trash"
+        cancelText="Cancel"
+        loading={confirmDialog.loading}
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+      />
+
+      {/* Undo Snackbar */}
+      <Snackbar
+        open={undoSnackbar.open}
+        autoHideDuration={6000}
+        onClose={handleCloseSnackbar}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Alert
+          onClose={handleCloseSnackbar}
+          severity={undoSnackbar.canUndo ? 'success' : 'error'}
+          sx={{ width: '100%' }}
+          action={
+            undoSnackbar.canUndo ? (
+              <Button color="inherit" size="small" onClick={handleUndo}>
+                Undo
+              </Button>
+            ) : undefined
+          }
+        >
+          {undoSnackbar.message}
+        </Alert>
+      </Snackbar>
     </Paper>
   );
 };

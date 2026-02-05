@@ -447,6 +447,77 @@ class PostgresStorage(StorageBackend):
         cur.close()
         conn.close()
 
+    def delete_message(self, message_id: str) -> bool:
+        """Delete a single message and its related data.
+
+        Deletes the message from the messages table. Related data in
+        classifications and embeddings tables should be handled by
+        ON DELETE CASCADE constraints or explicit deletion.
+
+        Args:
+            message_id: The ID of the message to delete
+
+        Returns:
+            True if the message was deleted, False if not found
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+
+        # Delete related data first (if no CASCADE)
+        cur.execute("DELETE FROM classifications WHERE message_id = %s", (message_id,))
+        cur.execute("DELETE FROM embeddings WHERE message_id = %s", (message_id,))
+
+        # Delete the message
+        cur.execute("DELETE FROM messages WHERE id = %s", (message_id,))
+        deleted = cur.rowcount > 0
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return deleted
+
+    def delete_messages(self, message_ids: List[str]) -> int:
+        """Delete multiple messages and their related data.
+
+        Uses batch deletion for efficiency.
+
+        Args:
+            message_ids: List of message IDs to delete
+
+        Returns:
+            Number of messages actually deleted
+        """
+        if not message_ids:
+            return 0
+
+        conn = self.connect()
+        cur = conn.cursor()
+
+        # Delete email_chunks first (they reference messages via FK with CASCADE, 
+        # but explicit delete is cleaner)
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_name = 'email_chunks'
+            )
+        """)
+        if cur.fetchone()[0]:
+            cur.execute("DELETE FROM email_chunks WHERE message_id = ANY(%s)", (message_ids,))
+
+        # Delete messages (they reference classifications via FK)
+        cur.execute("DELETE FROM messages WHERE id = ANY(%s)", (message_ids,))
+        deleted_count = cur.rowcount
+
+        # Then delete orphaned classification records
+        cur.execute("DELETE FROM classifications WHERE message_id = ANY(%s)", (message_ids,))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return deleted_count
+
     def save_classification_record(self, record) -> None:
         """Persist a ClassificationRecord-like object."""
         conn = self.connect()

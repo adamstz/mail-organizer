@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Box, ToggleButton, ToggleButtonGroup, TextField, InputAdornment, Chip, Stack, Typography, Button, Select, MenuItem, FormControl, InputLabel, Alert } from '@mui/material';
-import { Search as SearchIcon, ArrowUpward as ArrowUpIcon, ArrowDownward as ArrowDownIcon, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, Refresh as RefreshIcon } from '@mui/icons-material';
+import { Box, ToggleButton, ToggleButtonGroup, TextField, InputAdornment, Chip, Stack, Typography, Button, Select, MenuItem, FormControl, InputLabel, Alert, Snackbar, CircularProgress } from '@mui/material';
+import { Search as SearchIcon, ArrowUpward as ArrowUpIcon, ArrowDownward as ArrowDownIcon, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, Refresh as RefreshIcon, Delete as DeleteIcon, CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon } from '@mui/icons-material';
 import { logger } from '../utils/logger';
+import ConfirmDialog from './ConfirmDialog';
 
 interface EmailToolbarProps {
   searchQuery: string;
@@ -19,6 +20,8 @@ interface EmailToolbarProps {
   onPriorityFilter: (priority: string) => void;
   selectedModel: string;
   onModelChange: (model: string) => void;
+  selectedIds?: Set<string>;
+  onClearSelection?: () => void;
 }
 
 interface Label {
@@ -38,6 +41,8 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
   onPriorityFilter,
   selectedModel,
   onModelChange,
+  selectedIds = new Set(),
+  onClearSelection,
 }) => {
   const [labels, setLabels] = useState<Label[]>([]);
   const [loading, setLoading] = useState(false);
@@ -46,6 +51,77 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [startingOllama, setStartingOllama] = useState(false);
   const MAX_VISIBLE_LABELS = 6; // Number of labels to show before collapsing
+
+  // Bulk delete state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteSnackbar, setDeleteSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+    open: false,
+    message: '',
+    severity: 'success',
+  });
+
+  // Bulk delete handlers
+  const handleBulkDeleteClick = () => {
+    if (selectedIds.size > 0) {
+      setDeleteDialogOpen(true);
+    }
+  };
+
+  const handleBulkDeleteConfirm = async () => {
+    setDeleteLoading(true);
+    const ids = Array.from(selectedIds);
+    logger.info(`Deleting ${ids.length} emails`);
+
+    try {
+      const response = await fetch('/api/messages/batch', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      const deletedCount = result.deleted || ids.length;
+      const failedCount = result.failed?.length || 0;
+
+      if (failedCount > 0) {
+        setDeleteSnackbar({
+          open: true,
+          message: `Deleted ${deletedCount} emails, ${failedCount} failed`,
+          severity: 'error',
+        });
+      } else {
+        setDeleteSnackbar({
+          open: true,
+          message: `${deletedCount} email${deletedCount !== 1 ? 's' : ''} moved to trash`,
+          severity: 'success',
+        });
+      }
+
+      // Clear selection and trigger refresh
+      onClearSelection?.();
+      // Trigger page refresh by forcing re-render
+      window.dispatchEvent(new CustomEvent('emails-deleted'));
+    } catch (err) {
+      logger.error('Bulk delete failed:', err);
+      setDeleteSnackbar({
+        open: true,
+        message: 'Failed to delete emails',
+        severity: 'error',
+      });
+    } finally {
+      setDeleteLoading(false);
+      setDeleteDialogOpen(false);
+    }
+  };
+
+  const handleBulkDeleteCancel = () => {
+    setDeleteDialogOpen(false);
+  };
 
   // Wrapper functions to add logging
   const handlePriorityFilterClick = (priority: string) => {
@@ -178,6 +254,49 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
 
   return (
     <Box sx={{ mb: 2 }}>
+      {/* Bulk Selection Bar - shown when items are selected */}
+      {selectedIds.size > 0 && (
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            mb: 2,
+            p: 1.5,
+            bgcolor: 'primary.main',
+            borderRadius: 1,
+            color: 'primary.contrastText',
+          }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+            {selectedIds.size} email{selectedIds.size !== 1 ? 's' : ''} selected
+          </Typography>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<CheckBoxOutlineBlankIcon />}
+            onClick={onClearSelection}
+            sx={{
+              color: 'inherit',
+              borderColor: 'rgba(255,255,255,0.5)',
+              '&:hover': { borderColor: 'white', bgcolor: 'rgba(255,255,255,0.1)' },
+            }}
+          >
+            Clear Selection
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            color="error"
+            startIcon={deleteLoading ? <CircularProgress size={16} color="inherit" /> : <DeleteIcon />}
+            onClick={handleBulkDeleteClick}
+            disabled={deleteLoading}
+          >
+            {deleteLoading ? 'Deleting...' : 'Delete Selected'}
+          </Button>
+        </Box>
+      )}
+
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: 2 }}>
         <FormControl size="small" sx={{ minWidth: 150 }} error={!!ollamaError}>
           <InputLabel>LLM Model</InputLabel>
@@ -371,6 +490,34 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
           Loading labels...
         </Typography>
       )}
+
+      {/* Bulk Delete Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        title={`Delete ${selectedIds.size} Email${selectedIds.size !== 1 ? 's' : ''}?`}
+        message={`${selectedIds.size} email${selectedIds.size !== 1 ? 's' : ''} will be moved to trash. You can recover them from Gmail's trash folder.`}
+        confirmText="Move to Trash"
+        cancelText="Cancel"
+        loading={deleteLoading}
+        onConfirm={handleBulkDeleteConfirm}
+        onCancel={handleBulkDeleteCancel}
+      />
+
+      {/* Delete Feedback Snackbar */}
+      <Snackbar
+        open={deleteSnackbar.open}
+        autoHideDuration={4000}
+        onClose={() => setDeleteSnackbar(prev => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Alert
+          onClose={() => setDeleteSnackbar(prev => ({ ...prev, open: false }))}
+          severity={deleteSnackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {deleteSnackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

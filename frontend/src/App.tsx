@@ -90,6 +90,9 @@ const AppContent: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Selection state for bulk operations
+  const [selectedEmailIds, setSelectedEmailIds] = useState<Set<string>>(new Set());
+
   const theme = useMemo(() => getTheme(themeMode), [themeMode]);
 
   const toggleTheme = () => {
@@ -226,7 +229,14 @@ const AppContent: React.FC = () => {
     setSortOrder((prev: 'recent' | 'oldest') => prev === 'recent' ? 'oldest' : 'recent');
   };
 
+  // Selection handlers for bulk operations
+  const handleSelectionChange = useCallback((ids: Set<string>) => {
+    setSelectedEmailIds(ids);
+  }, []);
 
+  const handleClearSelection = useCallback(() => {
+    setSelectedEmailIds(new Set());
+  }, []);
 
   // Log when app loads
   React.useEffect(() => {
@@ -353,6 +363,8 @@ const AppContent: React.FC = () => {
               onPriorityFilter={handlePriorityFilter}
               selectedModel={selectedModel}
               onModelChange={handleModelChange}
+              selectedIds={selectedEmailIds}
+              onClearSelection={handleClearSelection}
             />
 
             <EmailList
@@ -361,6 +373,8 @@ const AppContent: React.FC = () => {
               searchQuery={searchQuery}
               sortOrder={sortOrder}
               selectedModel={selectedModel}
+              selectedIds={selectedEmailIds}
+              onSelectionChange={handleSelectionChange}
             />
           </Box>
         </Box>
