@@ -36,10 +36,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="organize-mail backend", lifespan=lifespan)
 
-# Allow CORS from common dev server origins used by Vite.
+
+# Get CORS origins from environment or use defaults for local development
+def get_cors_origins() -> list:
+    """Get allowed CORS origins from environment variable or defaults."""
+    cors_origins_env = os.environ.get("CORS_ORIGINS")
+    if cors_origins_env:
+        # Support comma-separated list of origins
+        return [origin.strip() for origin in cors_origins_env.split(",")]
+    # Default to common local dev server origins
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+    return [
+        frontend_url,
+        frontend_url.replace("localhost", "127.0.0.1"),
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+
+
+# Allow CORS from configured origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,30 +138,46 @@ async def health():
 @app.get("/api/auth/login")
 async def auth_login(
     redirect_url: Optional[str] = Query(None),
+    force: bool = Query(False),
     user: Optional[AuthenticatedUser] = Depends(get_current_user)
 ):
     """Redirect to Google OAuth consent screen or create session if tokens exist.
 
     This endpoint checks for existing valid OAuth tokens before redirecting to Google:
-    1. If user has valid JWT session → redirect to frontend
-    2. If user has valid OAuth tokens in DB → create JWT session and redirect
-    3. If user has expired OAuth tokens → refresh them, create session, redirect
-    4. Otherwise → redirect to Google OAuth consent screen
+    1. If force=true → always redirect to Google OAuth (for reconnecting Gmail)
+    2. If user has valid JWT session AND valid Gmail tokens → redirect to frontend
+    3. If user has valid OAuth tokens in DB → create JWT session and redirect
+    4. If user has expired OAuth tokens → refresh them, create session, redirect
+    5. Otherwise → redirect to Google OAuth consent screen
 
     Args:
         redirect_url: Optional URL to redirect to after successful auth (stored in state)
+        force: If true, bypass JWT check and force OAuth flow (for reconnecting Gmail)
         user: Current authenticated user (if any)
     """
-    logger.info("Starting OAuth login flow")
+    logger.info(f"Starting OAuth login flow (force={force})")
 
     try:
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         target_redirect = redirect_url or frontend_url
 
-        # Check if user already has a valid JWT session
+        # If force=true, skip all checks and go straight to OAuth
+        if force:
+            logger.info("Force OAuth flow requested, redirecting to Google OAuth")
+            auth_url = get_google_auth_url(state=redirect_url)
+            return RedirectResponse(url=auth_url)
+
+        # Check if user already has a valid JWT session AND valid Gmail tokens
         if user:
-            logger.info(f"User {user.email} already has valid JWT session, redirecting to frontend")
-            return RedirectResponse(url=target_redirect, status_code=302)
+            gmail_status = storage.is_gmail_connected(user.email)
+            if gmail_status["connected"]:
+                logger.info(f"User {user.email} has valid JWT and Gmail tokens, redirecting to frontend")
+                return RedirectResponse(url=target_redirect, status_code=302)
+            else:
+                # User has JWT but Gmail is disconnected - need OAuth
+                logger.info(f"User {user.email} has valid JWT but Gmail disconnected, redirecting to OAuth")
+                auth_url = get_google_auth_url(state=redirect_url)
+                return RedirectResponse(url=auth_url)
 
         # Check if we can find OAuth tokens in the database
         # For single-user deployments, get the authenticated email
@@ -299,18 +335,46 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
 
 @app.get("/api/auth/status")
 async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_user)):
-    """Check authentication status.
+    """Check authentication status including Gmail connection.
 
-    Returns the current user's email if authenticated, or null if not.
+    Returns the current user's email if authenticated, Gmail connection status,
+    and attempts to refresh expired tokens if possible.
     """
     if user:
+        # Check Gmail OAuth token status
+        gmail_status = storage.is_gmail_connected(user.email)
+
+        # If tokens expired but can be refreshed, try to refresh them
+        if not gmail_status["connected"] and gmail_status["can_refresh"]:
+            logger.info(f"Access token expired for {user.email}, attempting auto-refresh")
+            try:
+                from .auth.oauth import refresh_access_token
+
+                tokens_data = storage.get_oauth_tokens(user.email)
+                if tokens_data and tokens_data.get("refresh_token"):
+                    new_access_token, new_expiry = await refresh_access_token(
+                        tokens_data["refresh_token"]
+                    )
+                    storage.update_access_token(
+                        email=user.email,
+                        access_token=new_access_token,
+                        token_expiry=new_expiry,
+                    )
+                    logger.info(f"Successfully refreshed access token for {user.email}")
+                    gmail_status = {"connected": True, "can_refresh": True, "token_expiry": new_expiry}
+            except Exception as refresh_error:
+                logger.warning(f"Failed to auto-refresh token: {refresh_error}")
+                # gmail_status remains as is (not connected, can_refresh may now be false)
+
         return {
             "authenticated": True,
             "email": user.email,
+            "gmail_connected": gmail_status["connected"],
         }
     return {
         "authenticated": False,
         "email": None,
+        "gmail_connected": False,
     }
 
 
@@ -519,7 +583,7 @@ async def batch_delete_messages(
     user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
     """Delete multiple messages (move to Gmail trash and remove from local storage).
-    
+
     Requires authentication.
     """
     message_ids = request.ids
@@ -557,7 +621,7 @@ async def delete_message(
     user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
     """Delete a single message (move to Gmail trash and remove from local storage).
-    
+
     Requires authentication.
     """
     logger.info(f"DELETE /api/messages/{message_id}")
@@ -1480,7 +1544,8 @@ async def query_emails(
             question=request.question,
             top_k=request.top_k,
             similarity_threshold=request.similarity_threshold,
-            chat_history=chat_history
+            chat_history=chat_history,
+            session_id=request.chat_session_id,  # Pass session ID for result caching
         )
 
         # Save assistant response to chat session if chat_session_id provided

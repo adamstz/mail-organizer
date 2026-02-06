@@ -36,7 +36,8 @@ class TestQueryClassifierInit:
         """Should have correct set of valid query types."""
         expected_types = {
             'conversation', 'aggregation', 'search-by-sender', 'search-by-attachment',
-            'classification', 'filtered-temporal', 'temporal', 'semantic'
+            'classification', 'filtered-temporal', 'temporal', 'semantic',
+            'list-previous-results'
         }
         assert query_classifier.VALID_TYPES == expected_types
 
@@ -446,3 +447,63 @@ class TestQueryClassifierIntegration:
             result = query_classifier.detect_query_type(query)
             assert result in query_classifier.VALID_TYPES, \
                 f"Query '{query[:50]}' returned invalid type: {result}"
+
+
+class TestListPreviousResultsDetection:
+    """Tests for list-previous-results query type detection."""
+
+    def test_list_those_with_history(self, query_classifier):
+        """Should detect 'list those' as list-previous-results with chat history."""
+        chat_history = [
+            {"role": "user", "content": "how many python emails do I have"},
+            {"role": "assistant", "content": "You have 78 emails related to python."}
+        ]
+        result = query_classifier.detect_query_type("list those", chat_history)
+        assert result == "list-previous-results"
+
+    def test_show_them_with_history(self, query_classifier):
+        """Should detect 'show them' as list-previous-results with chat history."""
+        chat_history = [
+            {"role": "user", "content": "count my uber emails"},
+            {"role": "assistant", "content": "You have 42 uber emails."}
+        ]
+        result = query_classifier.detect_query_type("show them to me", chat_history)
+        assert result == "list-previous-results"
+
+    def test_list_those_78_emails(self, query_classifier):
+        """Should detect 'list those 78 emails' as list-previous-results."""
+        chat_history = [
+            {"role": "user", "content": "how many python emails"},
+            {"role": "assistant", "content": "You have 78 emails."}
+        ]
+        result = query_classifier.detect_query_type("list those 78 emails", chat_history)
+        assert result == "list-previous-results"
+
+    def test_no_detection_without_history(self, query_classifier):
+        """Should NOT detect list-previous-results without chat history."""
+        # Without history, "list those" doesn't make sense as a follow-up
+        result = query_classifier.detect_query_type("list those", None)
+        assert result != "list-previous-results"
+
+    def test_no_detection_with_empty_history(self, query_classifier):
+        """Should NOT detect list-previous-results with empty chat history."""
+        result = query_classifier.detect_query_type("list those", [])
+        assert result != "list-previous-results"
+
+    def test_what_are_they(self, query_classifier):
+        """Should detect 'what are they' as list-previous-results."""
+        chat_history = [
+            {"role": "user", "content": "count finance emails"},
+            {"role": "assistant", "content": "You have 50 finance emails."}
+        ]
+        result = query_classifier.detect_query_type("what are they", chat_history)
+        assert result == "list-previous-results"
+
+    def test_display_those(self, query_classifier):
+        """Should detect 'display those' as list-previous-results."""
+        chat_history = [
+            {"role": "user", "content": "how many uber emails"},
+            {"role": "assistant", "content": "You have 25 uber emails."}
+        ]
+        result = query_classifier.detect_query_type("display those", chat_history)
+        assert result == "list-previous-results"

@@ -43,6 +43,7 @@ from .storage import (
     get_oauth_tokens,
     update_access_token,
     delete_oauth_tokens,
+    is_gmail_connected,
     get_authenticated_email,
 )
 from .sqlite_storage import SQLiteStorage, default_db_path
@@ -90,6 +91,7 @@ __all__ = [
     "get_oauth_tokens",
     "update_access_token",
     "delete_oauth_tokens",
+    "is_gmail_connected",
     "get_authenticated_email",
     "InMemoryStorage",
     # sqlite

@@ -345,6 +345,17 @@ class StorageBackend:
         """
         raise NotImplementedError()
 
+    def is_gmail_connected(self, email: str) -> dict:
+        """Check if Gmail OAuth tokens are valid for a user.
+
+        Args:
+            email: User's email address
+
+        Returns:
+            Dict with connected (bool), can_refresh (bool), token_expiry (datetime or None)
+        """
+        raise NotImplementedError()
+
     def get_authenticated_email(self) -> Optional[str]:
         """Get the email of the currently authenticated user.
 

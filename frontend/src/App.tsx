@@ -67,7 +67,7 @@ const App: React.FC = () => {
 };
 
 const AppContent: React.FC = () => {
-  const { authenticated, loading, email, logout } = useAuth();
+  const { authenticated, loading, email, logout, showReconnect, cancelReconnect } = useAuth();
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('themeMode');
     return (saved as 'light' | 'dark') || 'dark';
@@ -275,6 +275,19 @@ const AppContent: React.FC = () => {
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <LoginPage />
+      </ThemeProvider>
+    );
+  }
+
+  // Show login page for Gmail reconnection
+  if (showReconnect) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <LoginPage 
+          isReconnect={true} 
+          onCancel={cancelReconnect}
+        />
       </ThemeProvider>
     );
   }

@@ -494,11 +494,11 @@ class PostgresStorage(StorageBackend):
         conn = self.connect()
         cur = conn.cursor()
 
-        # Delete email_chunks first (they reference messages via FK with CASCADE, 
+        # Delete email_chunks first (they reference messages via FK with CASCADE,
         # but explicit delete is cleaner)
         cur.execute("""
             SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables 
+                SELECT 1 FROM information_schema.tables
                 WHERE table_name = 'email_chunks'
             )
         """)
@@ -1481,6 +1481,90 @@ class PostgresStorage(StorageBackend):
 
         return count
 
+    def list_by_topic(self, topic: str, limit: int = 500) -> Tuple[List[MailMessage], int]:
+        """List messages matching a topic, with same logic as count_by_topic.
+
+        Uses ILIKE search on subject, from_addr, and snippet fields.
+        This ensures count and list operations use identical search logic.
+
+        Args:
+            topic: The topic/keyword to search for
+            limit: Maximum number of messages to return (default 500)
+
+        Returns:
+            Tuple of (list of matching messages, total count)
+        """
+        conn = self.connect()
+        pattern = f'%{topic}%'
+
+        # First get total count
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages
+            WHERE subject ILIKE %s OR from_addr ILIKE %s OR snippet ILIKE %s
+            """,
+            (pattern, pattern, pattern)
+        )
+        total_count = cur.fetchone()[0]
+        cur.close()
+
+        # Then get actual messages with limit
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            SELECT id, thread_id, from_addr, to_addr, subject, snippet,
+                   labels, internal_date, has_attachments,
+                   classification_labels, priority, summary
+            FROM messages
+            WHERE subject ILIKE %s OR from_addr ILIKE %s OR snippet ILIKE %s
+            ORDER BY internal_date DESC
+            LIMIT %s
+            """,
+            (pattern, pattern, pattern, limit)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        messages = [self._row_to_mail_message(r) for r in rows]
+        return messages, total_count
+
+    def get_messages_by_ids(self, message_ids: List[str]) -> List[MailMessage]:
+        """Retrieve messages by their IDs.
+
+        Args:
+            message_ids: List of message IDs to retrieve
+
+        Returns:
+            List of MailMessage objects (preserves order of input IDs where possible)
+        """
+        if not message_ids:
+            return []
+
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Use ANY for efficient batch lookup
+        cur.execute(
+            """
+            SELECT id, thread_id, from_addr, to_addr, subject, snippet,
+                   labels, internal_date, has_attachments,
+                   classification_labels, priority, summary
+            FROM messages
+            WHERE id = ANY(%s)
+            """,
+            (message_ids,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Create a dict for O(1) lookup and preserve original order
+        messages_by_id = {r['id']: self._row_to_mail_message(r) for r in rows}
+        return [messages_by_id[mid] for mid in message_ids if mid in messages_by_id]
+
     def get_daily_email_stats(self, days: int = 30) -> List[dict]:
         """Get email count statistics per day."""
         conn = self.connect()
@@ -1972,6 +2056,49 @@ class PostgresStorage(StorageBackend):
         try:
             cur.execute("DELETE FROM oauth_tokens WHERE email = %s", (email,))
             conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def is_gmail_connected(self, email: str) -> dict:
+        """Check if Gmail OAuth tokens are valid for a user.
+
+        Returns a dict with:
+        - connected: bool - True if valid non-expired tokens exist
+        - can_refresh: bool - True if expired but has refresh token
+        - token_expiry: datetime or None - When the access token expires
+        """
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            cur.execute(
+                """
+                SELECT token_expiry, refresh_token IS NOT NULL as has_refresh
+                FROM oauth_tokens
+                WHERE email = %s
+                """,
+                (email,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return {"connected": False, "can_refresh": False, "token_expiry": None}
+
+            token_expiry = row["token_expiry"]
+            has_refresh = row["has_refresh"]
+            now = datetime.now(timezone.utc)
+
+            # Check if token is still valid (with 5 min buffer)
+            if token_expiry and token_expiry > now:
+                return {"connected": True, "can_refresh": has_refresh, "token_expiry": token_expiry}
+
+            # Token expired but can be refreshed
+            if has_refresh:
+                return {"connected": False, "can_refresh": True, "token_expiry": token_expiry}
+
+            # Token expired and no refresh token
+            return {"connected": False, "can_refresh": False, "token_expiry": token_expiry}
         finally:
             cur.close()
             conn.close()

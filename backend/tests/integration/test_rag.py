@@ -387,7 +387,8 @@ class TestQueryClassifierIntegrationWithEngine:
         """All handler types should be initialized."""
         expected_handlers = {
             'conversation', 'aggregation', 'search-by-sender', 'search-by-attachment',
-            'classification', 'temporal', 'filtered-temporal', 'semantic'
+            'classification', 'temporal', 'filtered-temporal', 'semantic',
+            'list-previous-results'
         }
         
         assert expected_handlers == set(memory_rag_engine.handlers.keys())

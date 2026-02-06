@@ -760,7 +760,8 @@ class TestBaseHandlerMethods:
             question="Test question",
             query_type="test",
             confidence="high",
-            extra_field="extra_value"
+            total_count=42,
+            cached_message_ids=["msg1", "msg2"]
         )
         
         assert response['answer'] == "Test answer"
@@ -768,7 +769,8 @@ class TestBaseHandlerMethods:
         assert response['question'] == "Test question"
         assert response['query_type'] == "test"
         assert response['confidence'] == "high"
-        assert response['extra_field'] == "extra_value"
+        assert response['total_count'] == 42
+        assert response['cached_message_ids'] == ["msg1", "msg2"]
 
     def test_format_sources(self, handler_dependencies):
         """Should format email sources correctly."""

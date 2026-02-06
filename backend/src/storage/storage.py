@@ -336,6 +336,11 @@ def delete_oauth_tokens(email: str) -> None:
     get_storage_backend().delete_oauth_tokens(email=email)
 
 
+def is_gmail_connected(email: str) -> dict:
+    """Check if Gmail OAuth tokens are valid for a user."""
+    return get_storage_backend().is_gmail_connected(email=email)
+
+
 def get_authenticated_email() -> Optional[str]:
     """Get the email of the currently authenticated user."""
     return get_storage_backend().get_authenticated_email()

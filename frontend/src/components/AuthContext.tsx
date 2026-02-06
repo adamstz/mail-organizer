@@ -1,17 +1,22 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { getApiUrl } from '../utils/api';
 
 interface AuthState {
   authenticated: boolean;
   email: string | null;
+  gmailConnected: boolean;
   loading: boolean;
   error: string | null;
+  showReconnect: boolean;
 }
 
 interface AuthContextType extends AuthState {
   login: () => void;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
+  reconnectGmail: () => void;
+  cancelReconnect: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -32,8 +37,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [state, setState] = useState<AuthState>({
     authenticated: false,
     email: null,
+    gmailConnected: false,
     loading: true,
     error: null,
+    showReconnect: false,
   });
 
   const checkAuth = useCallback(async () => {
@@ -50,19 +57,23 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       
       const data = await response.json();
       
-      setState({
+      setState((prev: AuthState) => ({
+        ...prev,
         authenticated: data.authenticated,
         email: data.email,
+        gmailConnected: data.gmail_connected ?? false,
         loading: false,
         error: null,
-      });
+      }));
     } catch (err) {
       console.error('Auth check failed:', err);
       setState({
         authenticated: false,
         email: null,
+        gmailConnected: false,
         loading: false,
         error: err instanceof Error ? err.message : 'Authentication check failed',
+        showReconnect: false,
       });
     }
   }, []);
@@ -81,10 +92,21 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     }
   }, [checkAuth]);
 
-  const login = useCallback(() => {
+  const login = useCallback((force: boolean = false) => {
     // Redirect to backend OAuth endpoint
     // Backend will redirect back to the frontend base URL after successful auth
-    window.location.href = '/api/auth/login';
+    const url = force ? getApiUrl('/api/auth/login?force=true') : getApiUrl('/api/auth/login');
+    window.location.href = url;
+  }, []);
+
+  const reconnectGmail = useCallback(() => {
+    // Show the login page for Gmail reconnection
+    setState((prev: AuthState) => ({ ...prev, showReconnect: true }));
+  }, []);
+
+  const cancelReconnect = useCallback(() => {
+    // Hide the reconnect login page
+    setState((prev: AuthState) => ({ ...prev, showReconnect: false }));
   }, []);
 
   const logout = useCallback(async () => {
@@ -97,8 +119,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       setState({
         authenticated: false,
         email: null,
+        gmailConnected: false,
         loading: false,
         error: null,
+        showReconnect: false,
       });
     } catch (err) {
       console.error('Logout failed:', err);
@@ -106,17 +130,21 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       setState({
         authenticated: false,
         email: null,
+        gmailConnected: false,
         loading: false,
         error: err instanceof Error ? err.message : 'Logout failed',
+        showReconnect: false,
       });
     }
   }, []);
 
   const value: AuthContextType = {
     ...state,
-    login,
+    login: () => login(state.showReconnect),  // Use force=true when reconnecting
     logout,
     checkAuth,
+    reconnectGmail,
+    cancelReconnect,
   };
 
   return (

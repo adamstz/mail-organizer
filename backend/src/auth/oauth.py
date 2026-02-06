@@ -41,6 +41,11 @@ class OAuthTokens:
     email: str
 
 
+def get_backend_url() -> str:
+    """Get the backend base URL from environment or default to localhost."""
+    return os.environ.get("BACKEND_URL", "http://localhost:8000")
+
+
 def get_oauth_config() -> tuple[str, str, str]:
     """Get OAuth configuration from environment variables.
 
@@ -52,10 +57,10 @@ def get_oauth_config() -> tuple[str, str, str]:
     """
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-    redirect_uri = os.environ.get(
-        "OAUTH_REDIRECT_URI",
-        "http://localhost:8000/api/auth/callback"
-    )
+
+    # Build redirect URI from BACKEND_URL if OAUTH_REDIRECT_URI not explicitly set
+    default_redirect = f"{get_backend_url()}/api/auth/callback"
+    redirect_uri = os.environ.get("OAUTH_REDIRECT_URI", default_redirect)
 
     if not client_id or not client_secret:
         raise ValueError(

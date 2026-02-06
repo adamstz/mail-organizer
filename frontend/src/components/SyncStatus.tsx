@@ -19,6 +19,8 @@ import CategoryIcon from '@mui/icons-material/Category';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import LinkOffIcon from '@mui/icons-material/LinkOff';
+import { useAuth } from './AuthContext';
 
 interface ProgressInfo {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -31,7 +33,7 @@ interface ProgressInfo {
 }
 
 interface SyncStatusData {
-  gmail_total: number;
+  gmail_total: number | null;
   db_total: number;
   not_synced: number;
   unclassified: number;
@@ -45,6 +47,7 @@ interface SyncStatusProps {
 }
 
 const SyncStatus: React.FC<SyncStatusProps> = ({ onRefresh }) => {
+  const { gmailConnected, reconnectGmail } = useAuth();
   const [status, setStatus] = useState<SyncStatusData | null>(null);
   const [loading, setLoading] = useState(false);
   // Default collapsed to keep the toolbar compact; users can expand if they want details
@@ -233,6 +236,27 @@ const SyncStatus: React.FC<SyncStatusProps> = ({ onRefresh }) => {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', flexGrow: 1 }}>
             <Typography variant="h6">Sync Status</Typography>
             
+            {/* Gmail connection status - always visible */}
+            {gmailConnected ? (
+              <Chip
+                label={`Gmail: ${status.gmail_total ?? 0}`}
+                size="small"
+                color="default"
+              />
+            ) : (
+              <Tooltip title="Click to reconnect Gmail">
+                <Chip
+                  label="Gmail: Not Connected"
+                  size="small"
+                  color="error"
+                  icon={<LinkOffIcon />}
+                  onClick={reconnectGmail}
+                  clickable
+                  sx={{ cursor: 'pointer' }}
+                />
+              </Tooltip>
+            )}
+            
             <Badge badgeContent={status.not_synced} color="warning">
               <Chip
                 label="Not Synced"
@@ -285,12 +309,6 @@ const SyncStatus: React.FC<SyncStatusProps> = ({ onRefresh }) => {
         <Collapse in={isExpanded}>
           <Stack spacing={2}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-              <Chip
-                label={`Gmail: ${status.gmail_total}`}
-                size="small"
-                color="default"
-              />
-              
               <Chip
                 label={`Database: ${status.db_total}`}
                 size="small"

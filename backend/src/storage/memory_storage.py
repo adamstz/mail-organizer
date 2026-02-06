@@ -379,6 +379,28 @@ class InMemoryStorage(StorageBackend):
         self.__init_oauth_storage()
         self._oauth_tokens.pop(email, None)
 
+    def is_gmail_connected(self, email: str) -> dict:
+        """Check if Gmail OAuth tokens are valid for a user."""
+        from datetime import datetime, timezone
+
+        self.__init_oauth_storage()
+        tokens = self._oauth_tokens.get(email)
+
+        if not tokens:
+            return {"connected": False, "can_refresh": False, "token_expiry": None}
+
+        token_expiry = tokens.get("token_expiry")
+        has_refresh = tokens.get("refresh_token") is not None
+        now = datetime.now(timezone.utc)
+
+        if token_expiry and token_expiry > now:
+            return {"connected": True, "can_refresh": has_refresh, "token_expiry": token_expiry}
+
+        if has_refresh:
+            return {"connected": False, "can_refresh": True, "token_expiry": token_expiry}
+
+        return {"connected": False, "can_refresh": False, "token_expiry": token_expiry}
+
     def get_authenticated_email(self) -> Optional[str]:
         """Get the email of any authenticated user."""
         self.__init_oauth_storage()

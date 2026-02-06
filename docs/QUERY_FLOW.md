@@ -8,10 +8,11 @@ This document describes the complete flow of user queries through the mail-organ
 3. [Classification System](#classification-system)
 4. [Retrieval Pipeline (Hybrid Search)](#retrieval-pipeline-hybrid-search)
 5. [Handler Routing and Execution](#handler-routing-and-execution)
-6. [Number Extraction for Limits](#number-extraction-for-limits)
-7. [LLM Interactions](#llm-interactions)
-8. [Testing and Validation](#testing-and-validation)
-9. [Troubleshooting](#troubleshooting)
+6. [Result Caching for Follow-up Queries](#result-caching-for-follow-up-queries)
+7. [Number Extraction for Limits](#number-extraction-for-limits)
+8. [LLM Interactions](#llm-interactions)
+9. [Testing and Validation](#testing-and-validation)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -68,9 +69,9 @@ User Query → API → RAG Engine → Classifier → Handler → LLM → Respons
 │ 4. Query Classification (LLM Call #1)                          │
 │    - QueryClassifier.detect_query_type()                        │
 │    - LLM receives QUERY_CLASSIFICATION_PROMPT                   │
-│    - Returns one of 8 types: conversation, aggregation,         │
+│    - Returns one of 9 types: conversation, aggregation,         │
 │      search-by-sender, search-by-attachment, classification,    │
-│      filtered-temporal, temporal, semantic                      │
+│      filtered-temporal, temporal, semantic, list-previous-results│
 │    - Intent-based: "What does user want to DO?"                │
 └────────────────────┬────────────────────────────────────────────┘
                      │
@@ -188,7 +189,7 @@ Handler: Receives chat_history, resolves pronouns naturally
   → Handler knows how to use context for its specific intent
 ```
 
-### 8 Query Types
+### 9 Query Types
 
 | Type | Intent | Examples |
 |------|--------|----------|
@@ -200,6 +201,7 @@ Handler: Receives chat_history, resolves pronouns naturally
 | **filtered-temporal** | Time + sender | "uber emails last month" |
 | **temporal** | Time-based only | "emails from yesterday" |
 | **semantic** | Content search | "about invoices", "meeting notes" |
+| **list-previous-results** | Show cached results | "list those", "show them", "list those 78 emails" |
 
 ### Prompt Structure (Simplified for Small LLMs)
 
@@ -494,6 +496,7 @@ handlers = {
     'filtered-temporal': FilteredTemporalHandler,
     'temporal': TemporalHandler,
     'semantic': SemanticHandler,
+    'list-previous-results': PreviousResultsHandler,
 }
 
 # Route based on classification
@@ -501,9 +504,43 @@ handler = handlers[query_type]
 result = handler.handle(
     question=question,
     limit=top_k,
-    chat_history=chat_history
+    chat_history=chat_history,
+    session_id=session_id  # For result caching
 )
+
+# Cache results for follow-up queries
+if session_id:
+    cache_result(session_id, result)
 ```
+
+### Result Caching for Follow-up Queries
+
+**Problem Solved**: When a user asks "how many python emails?" (returns 78), then "list those 78 emails", the system needs to retrieve the *same* emails, not run a new search.
+
+**Implementation**:
+- **File**: `backend/src/services/result_cache.py`
+- **Cache**: In-memory LRU cache with 100 max sessions, 30-minute TTL
+- **Storage**: Up to 500 message IDs per query result
+- **Detection**: `QueryClassifier._is_list_previous_request()` detects "list those", "show them", etc.
+
+**Flow**:
+```
+User: "how many python emails?"
+  → aggregation handler uses list_by_topic("python")
+  → Returns count (78) AND caches 500 message IDs
+  → Response: "You have 78 emails related to 'python'."
+
+User: "list those 78 emails"
+  → Classifier detects "list-previous-results" type
+  → PreviousResultsHandler retrieves cached IDs
+  → Fetches full message details via get_messages_by_ids()
+  → Response: "Here are the 78 emails..."
+```
+
+**Key Files**:
+- `backend/src/services/result_cache.py` - LRU cache implementation
+- `backend/src/services/query_handlers/previous_results.py` - Handler for cached results
+- `backend/src/models/query_response.py` - Structured response types with `cached_message_ids`
 
 ### Handler Responsibilities
 

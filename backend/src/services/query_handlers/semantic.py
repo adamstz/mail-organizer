@@ -76,12 +76,12 @@ class SemanticHandler(QueryHandler):
             logger.warning(f"[SEMANTIC] Reranking failed: {e}. Using original results.")
             return results[:top_k]
 
-    def handle(self, question: str, limit: int = 5, threshold: float = 0.5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 20, threshold: float = 0.5, chat_history: Optional[list] = None) -> Dict:
         """Handle a semantic search query with hybrid search and reranking.
 
         Args:
             question: User's question
-            limit: Final number of emails to return (after reranking)
+            limit: Final number of emails to return (after reranking, default 20)
             threshold: Minimum similarity threshold
             chat_history: Optional list of previous messages for context
 
@@ -137,8 +137,8 @@ class SemanticHandler(QueryHandler):
                     query_text=question,
                     limit=limit,  # Final limit after fusion
                     retrieval_k=retrieval_k,  # Initial retrieval from each method
-                    vector_weight=0.6,  # Slightly favor semantic search
-                    keyword_weight=0.4
+                    vector_weight=0.5,  # Equal weight for balanced results
+                    keyword_weight=0.5  # Improved exact keyword matching
                 )
                 logger.debug("[SEMANTIC QUERY] Hybrid search returned %d results", len(similar_emails))
             else:
@@ -222,6 +222,9 @@ class SemanticHandler(QueryHandler):
             for msg, score in similar_emails
         ]
 
+        # Extract message IDs for caching (enables "list those" follow-ups)
+        cached_message_ids = [msg.id for msg, _ in similar_emails]
+
         # Determine confidence based on top similarity score
         top_score = similar_emails[0][1]
         if top_score > 0.8:
@@ -239,6 +242,7 @@ class SemanticHandler(QueryHandler):
             question=question,
             query_type='semantic',
             confidence=confidence,
+            cached_message_ids=cached_message_ids,
         )
 
     def _generate_answer(self, question: str, context: str, chat_history: Optional[list] = None) -> str:

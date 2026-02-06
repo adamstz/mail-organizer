@@ -59,11 +59,12 @@ A minimal OAuth 2.0 flow for single-user self-hosted deployment. The user authen
    - `update_access_token()` - Update access token after refresh
    - `delete_oauth_tokens()` - Remove tokens on logout
    - `get_authenticated_email()` - Get first authenticated user
+   - `is_gmail_connected()` - Check if valid OAuth tokens exist (returns `connected`, `can_refresh`, `token_expiry`)
 
 4. **API endpoints** - Added to `backend/src/api.py`:
-   - `GET /api/auth/login` - Redirects to Google consent screen
+   - `GET /api/auth/login` - Redirects to Google consent screen (supports `force` param)
    - `GET /api/auth/callback` - Handles OAuth code exchange, stores tokens, sets JWT cookie
-   - `GET /api/auth/status` - Returns current auth state
+   - `GET /api/auth/status` - Returns current auth state including Gmail connection status
    - `POST /api/auth/logout` - Clears JWT cookie and deletes tokens
 
 5. **Gmail client** - Updated `backend/src/clients/gmail_client.py`:
@@ -72,14 +73,17 @@ A minimal OAuth 2.0 flow for single-user self-hosted deployment. The user authen
    - Automatic token refresh with DB update
 
 6. **Frontend auth flow** - Created:
-   - `frontend/src/components/AuthContext.tsx` - React context for auth state
-   - `frontend/src/components/LoginPage.tsx` - Login page with Google sign-in button
-   - Updated `App.tsx` to wrap with `AuthProvider` and show login when unauthenticated
+   - `frontend/src/components/AuthContext.tsx` - React context for auth state (includes `gmailConnected`, `reconnectGmail`)
+   - `frontend/src/components/LoginPage.tsx` - Login page with Google sign-in button (supports reconnect mode)
+   - `frontend/src/components/SyncStatus.tsx` - Shows Gmail connection status with reconnect button
+   - `frontend/src/utils/api.ts` - API URL helper for OAuth redirects
+   - Updated `App.tsx` to wrap with `AuthProvider` and show login when unauthenticated or reconnecting
 
 7. **Tests** - Created:
    - `backend/tests/unit/test_auth_middleware.py` - JWT tests
    - `backend/tests/unit/test_oauth.py` - OAuth flow tests
-   - `backend/tests/integration/test_auth_flow.py` - Full flow tests
+   - `backend/tests/unit/test_storage_oauth.py` - OAuth token storage tests (`is_gmail_connected`)
+   - `backend/tests/integration/test_auth_flow.py` - Full flow tests including Gmail connection status
 
 ## Environment Variables
 
@@ -89,9 +93,12 @@ A minimal OAuth 2.0 flow for single-user self-hosted deployment. The user authen
 | `GOOGLE_CLIENT_ID` | OAuth client ID from GCP Console | Yes |
 | `GOOGLE_CLIENT_SECRET` | OAuth client secret | Yes |
 | `ALLOWED_EMAIL` | Restrict auth to specific Gmail address | Optional |
-| `OAUTH_REDIRECT_URI` | Callback URL (default: `http://localhost:8000/api/auth/callback`) | Optional |
+| `BACKEND_URL` | Backend base URL (default: `http://localhost:8000`) | Optional |
 | `FRONTEND_URL` | Frontend URL for redirects (default: `http://localhost:5173`) | Optional |
+| `OAUTH_REDIRECT_URI` | Callback URL (default: `{BACKEND_URL}/api/auth/callback`) | Optional |
+| `CORS_ORIGINS` | Comma-separated allowed CORS origins | Optional |
 | `SECURE_COOKIES` | Set to "true" for HTTPS deployments | Optional |
+| `VITE_API_URL` | Frontend env: API base URL for OAuth redirects | Optional |
 
 ## Setup Instructions
 

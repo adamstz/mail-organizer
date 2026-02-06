@@ -1,9 +1,15 @@
 import React from 'react';
-import { Box, Button, Typography, Paper, CircularProgress, Alert } from '@mui/material';
+import { Box, Button, Typography, Paper, CircularProgress, Alert, IconButton } from '@mui/material';
 import GoogleIcon from '@mui/icons-material/Google';
+import CloseIcon from '@mui/icons-material/Close';
 import { useAuth } from './AuthContext';
 
-const LoginPage: React.FC = () => {
+interface LoginPageProps {
+  isReconnect?: boolean;
+  onCancel?: () => void;
+}
+
+const LoginPage: React.FC<LoginPageProps> = ({ isReconnect = false, onCancel }) => {
   const { login, loading, error } = useAuth();
 
   if (loading) {
@@ -41,14 +47,28 @@ const LoginPage: React.FC = () => {
           mx: 2,
           textAlign: 'center',
           borderRadius: 2,
+          position: 'relative',
         }}
       >
+        {isReconnect && onCancel && (
+          <IconButton
+            onClick={onCancel}
+            sx={{ position: 'absolute', top: 8, right: 8 }}
+            aria-label="Cancel"
+          >
+            <CloseIcon />
+          </IconButton>
+        )}
+
         <Typography variant="h4" component="h1" gutterBottom sx={{ fontWeight: 600 }}>
-          Mail Organizer
+          {isReconnect ? 'Reconnect Gmail' : 'Mail Organizer'}
         </Typography>
         
         <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-          Sign in with your Google account to access and organize your Gmail
+          {isReconnect 
+            ? 'Your Gmail connection has expired. Please sign in again to continue syncing your emails.'
+            : 'Sign in with your Google account to access and organize your Gmail'
+          }
         </Typography>
 
         {error && (
@@ -74,11 +94,14 @@ const LoginPage: React.FC = () => {
             },
           }}
         >
-          Sign in with Google
+          {isReconnect ? 'Reconnect with Google' : 'Sign in with Google'}
         </Button>
 
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 4 }}>
-          This application requires read-only access to your Gmail to organize and classify your emails.
+          {isReconnect 
+            ? 'This will refresh your Gmail access permissions.'
+            : 'This application requires read-only access to your Gmail to organize and classify your emails.'
+          }
         </Typography>
       </Paper>
     </Box>

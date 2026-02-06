@@ -52,6 +52,9 @@ class AggregationHandler(QueryHandler):
     def _handle_topic_count(self, question: str, question_lower: str, chat_history: Optional[list] = None) -> Dict | None:
         """Handle counting emails by topic.
 
+        Uses list_by_topic to get both count AND message IDs for caching,
+        enabling follow-up queries like "list those 78 emails".
+
         Returns None if topic extraction fails.
         """
         try:
@@ -59,16 +62,28 @@ class AggregationHandler(QueryHandler):
             if not topic:
                 return None
 
-            count = self.storage.count_by_topic(topic)
-            logger.debug("[AGGREGATION] Found %s emails matching '%s'", count, topic)
+            # Use list_by_topic to get both messages and count
+            # This ensures count and list use identical search logic
+            messages, total_count = self.storage.list_by_topic(topic, limit=500)
+            logger.debug("[AGGREGATION] Found %s emails matching '%s' (retrieved %d for caching)",
+                         total_count, topic, len(messages))
 
-            answer = f"You have {count} emails related to '{topic}'."
+            answer = f"You have {total_count} emails related to '{topic}'."
+
+            # Extract message IDs for caching (enables "list those" follow-ups)
+            cached_message_ids = [msg.id for msg in messages]
+
+            # Format sources for the first few messages (for UI display)
+            sources = self._format_sources(messages[:5]) if messages else []
+
             return self._build_response(
                 answer=answer,
-                sources=[],
+                sources=sources,
                 question=question,
                 query_type='aggregation',
                 confidence='high',
+                total_count=total_count,
+                cached_message_ids=cached_message_ids,
             )
         except Exception as e:
             logger.debug("[AGGREGATION] Failed to extract topic: %s", e)

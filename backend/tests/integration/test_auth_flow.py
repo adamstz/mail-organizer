@@ -45,6 +45,7 @@ class TestAuthEndpoints:
         data = response.json()
         assert data["authenticated"] is False
         assert data["email"] is None
+        assert data["gmail_connected"] is False
 
     def test_auth_login_redirects_to_google(self, client):
         """Test login endpoint redirects to Google OAuth."""
@@ -174,6 +175,66 @@ class TestAuthenticatedSession:
         with TestClient(app, cookies={JWT_COOKIE_NAME: token}) as client:
             yield client
 
+    @pytest.fixture
+    def authenticated_client_with_valid_tokens(self):
+        """Create a test client with authenticated session and valid OAuth tokens."""
+        from datetime import datetime, timedelta, timezone
+        from src.api import app
+        from src import storage
+        from src.storage.memory_storage import InMemoryStorage
+        from src.auth.middleware import create_jwt_token, JWT_COOKIE_NAME
+        
+        # Set up storage
+        memory_storage = InMemoryStorage()
+        storage.set_storage_backend(memory_storage)
+        memory_storage.init_db()
+        
+        # Save valid OAuth tokens
+        email = "testuser@gmail.com"
+        future_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        memory_storage.save_oauth_tokens(
+            email=email,
+            access_token="valid_access_token",
+            refresh_token="valid_refresh_token",
+            token_expiry=future_expiry,
+        )
+        
+        # Create JWT token for test user
+        token = create_jwt_token(email)
+        
+        with TestClient(app, cookies={JWT_COOKIE_NAME: token}) as client:
+            yield client
+
+    @pytest.fixture
+    def authenticated_client_with_expired_tokens(self):
+        """Create a test client with authenticated session but expired OAuth tokens."""
+        from datetime import datetime, timedelta, timezone
+        from src.api import app
+        from src import storage
+        from src.storage.memory_storage import InMemoryStorage
+        from src.auth.middleware import create_jwt_token, JWT_COOKIE_NAME
+        
+        # Set up storage
+        memory_storage = InMemoryStorage()
+        storage.set_storage_backend(memory_storage)
+        memory_storage.init_db()
+        
+        # Save expired OAuth tokens without refresh token
+        email = "testuser@gmail.com"
+        past_expiry = datetime.now(timezone.utc) - timedelta(hours=1)
+        memory_storage.save_oauth_tokens(
+            email=email,
+            access_token="expired_access_token",
+            refresh_token=None,  # No refresh token
+            token_expiry=past_expiry,
+        )
+        
+        # Create JWT token for test user
+        token = create_jwt_token(email)
+        
+        with TestClient(app, cookies={JWT_COOKIE_NAME: token}) as client:
+            yield client
+
     def test_auth_status_authenticated(self, authenticated_client):
         """Test auth status returns user info when authenticated."""
         response = authenticated_client.get("/api/auth/status")
@@ -182,6 +243,29 @@ class TestAuthenticatedSession:
         data = response.json()
         assert data["authenticated"] is True
         assert data["email"] == "testuser@gmail.com"
+        # gmail_connected should be False when no OAuth tokens exist
+        assert data["gmail_connected"] is False
+
+    def test_auth_status_with_valid_gmail_tokens(self, authenticated_client_with_valid_tokens):
+        """Test auth status shows gmail_connected when valid tokens exist."""
+        response = authenticated_client_with_valid_tokens.get("/api/auth/status")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["authenticated"] is True
+        assert data["email"] == "testuser@gmail.com"
+        assert data["gmail_connected"] is True
+
+    def test_auth_status_with_expired_gmail_tokens(self, authenticated_client_with_expired_tokens):
+        """Test auth status shows gmail not connected when tokens expired and no refresh."""
+        response = authenticated_client_with_expired_tokens.get("/api/auth/status")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["authenticated"] is True
+        assert data["email"] == "testuser@gmail.com"
+        # Should be False because tokens expired and no refresh token
+        assert data["gmail_connected"] is False
 
     def test_logout_authenticated_user(self, authenticated_client):
         """Test that authenticated user can logout."""
