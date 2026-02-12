@@ -36,6 +36,7 @@ class TestOAuthTokenCheck:
         # Setup: user already has valid JWT session
         mock_user = AuthenticatedUser(email="test@example.com")
         mock_get_current_user.return_value = mock_user
+        mock_storage.is_gmail_connected.return_value = {"connected": True}
         
         # Execute
         response = await auth_login(redirect_url=None, user=mock_user)
@@ -44,8 +45,8 @@ class TestOAuthTokenCheck:
         assert isinstance(response, RedirectResponse)
         assert "accounts.google.com" not in response.headers["location"]
         
-        # Should not check storage since JWT is valid
-        mock_storage.get_authenticated_email.assert_not_called()
+        # Should verify Gmail connection status
+        mock_storage.is_gmail_connected.assert_called_once_with("test@example.com")
 
     @pytest.mark.asyncio
     async def test_login_with_valid_stored_tokens(self, mock_storage, mock_get_current_user):
@@ -65,7 +66,8 @@ class TestOAuthTokenCheck:
         }
         
         # Execute
-        with patch('src.api.create_jwt_token') as mock_create_jwt:
+        with patch('src.api.create_jwt_token') as mock_create_jwt, \
+             patch('src.api.set_auth_cookie') as mock_set_cookie:
             mock_create_jwt.return_value = "new_jwt_token"
             response = await auth_login(redirect_url=None, user=None)
         
@@ -139,7 +141,7 @@ class TestOAuthTokenCheck:
         
         # Mock failed token refresh
         with patch('src.auth.oauth.refresh_access_token') as mock_refresh, \
-             patch('src.auth.oauth.get_google_auth_url') as mock_auth_url:
+             patch('src.api.get_google_auth_url') as mock_auth_url:
             
             mock_refresh.side_effect = ValueError("Invalid refresh token")
             mock_auth_url.return_value = "https://accounts.google.com/o/oauth2/v2/auth?..."
@@ -217,7 +219,8 @@ class TestOAuthTokenCheck:
         custom_redirect = "http://localhost:5173/dashboard"
         
         # Execute
-        with patch('src.api.create_jwt_token') as mock_create_jwt:
+        with patch('src.api.create_jwt_token') as mock_create_jwt, \
+             patch('src.api.set_auth_cookie') as mock_set_cookie:
             mock_create_jwt.return_value = "new_jwt_token"
             response = await auth_login(redirect_url=custom_redirect, user=None)
         

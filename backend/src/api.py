@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
-from typing import List, Optional
+from typing import List, Optional, Annotated
 from pydantic import BaseModel
 import logging
 import asyncio
@@ -137,8 +137,8 @@ async def health():
 
 @app.get("/api/auth/login")
 async def auth_login(
-    redirect_url: Optional[str] = Query(None),
-    force: bool = Query(False),
+    redirect_url: Annotated[Optional[str], Query()] = None,
+    force: Annotated[bool, Query()] = False,
     user: Optional[AuthenticatedUser] = Depends(get_current_user)
 ):
     """Redirect to Google OAuth consent screen or create session if tokens exist.
