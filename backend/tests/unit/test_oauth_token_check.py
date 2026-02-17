@@ -6,7 +6,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 
-from src.auth.oauth import OAuthTokens, refresh_access_token
+from src.auth.oauth import refresh_access_token
 from src.auth.middleware import create_jwt_token, AuthenticatedUser
 
 # Configure pytest to use anyio for async tests
@@ -142,9 +142,9 @@ class TestOAuthTokenCheck:
         # Mock failed token refresh
         with patch('src.auth.oauth.refresh_access_token') as mock_refresh, \
              patch('src.api.get_google_auth_url') as mock_auth_url:
-            
+
             mock_refresh.side_effect = ValueError("Invalid refresh token")
-            mock_auth_url.return_value = "https://accounts.google.com/o/oauth2/v2/auth?..."
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?...", "test_state")
             
             # Execute
             response = await auth_login(redirect_url=None, user=None)
@@ -164,7 +164,7 @@ class TestOAuthTokenCheck:
         mock_storage.get_authenticated_email.return_value = None
         
         with patch('src.api.get_google_auth_url') as mock_auth_url:
-            mock_auth_url.return_value = "https://accounts.google.com/o/oauth2/v2/auth?..."
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?...", "test_state")
             
             # Execute
             response = await auth_login(redirect_url=None, user=None)
@@ -191,7 +191,7 @@ class TestOAuthTokenCheck:
         }
         
         with patch('src.api.get_google_auth_url') as mock_auth_url:
-            mock_auth_url.return_value = "https://accounts.google.com/o/oauth2/v2/auth?..."
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?...", "test_state")
             
             # Execute
             response = await auth_login(redirect_url=None, user=None)

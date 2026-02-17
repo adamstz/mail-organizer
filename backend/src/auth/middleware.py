@@ -105,6 +105,7 @@ def set_auth_cookie(response: Response, token: str) -> None:
         samesite="lax",  # CSRF protection
         max_age=JWT_EXPIRY_DAYS * 24 * 60 * 60,  # Seconds
         path="/",
+        domain="localhost",  # Share cookie across ports (5173 and 8000)
     )
 
 
@@ -117,6 +118,7 @@ def clear_auth_cookie(response: Response) -> None:
     response.delete_cookie(
         key=JWT_COOKIE_NAME,
         path="/",
+        domain="localhost",  # Must match domain used in set_auth_cookie
     )
 
 

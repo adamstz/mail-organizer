@@ -152,7 +152,7 @@ npm run dev
 
 1. Open http://localhost:5173
 2. Click "Sign in with Google"
-3. Grant Gmail read permissions
+3. Grant Gmail permissions (read, modify, delete)
 4. You're now authenticated!
 
 ## Security Considerations
@@ -213,4 +213,3 @@ frontend/
 1. **Protected Routes**: Add `require_auth` dependency to sensitive endpoints
 2. **Token Expiry Warning**: Frontend could check token expiry and prompt re-auth
 3. **Multiple Accounts**: Support multiple Gmail accounts (add user_id to messages table)
-4. **OAuth Scopes**: Add scope for modifying labels (currently read-only)

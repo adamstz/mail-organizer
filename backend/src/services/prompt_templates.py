@@ -61,7 +61,7 @@ Do not include explanations or markdown. Only output valid JSON. Do not invent l
 # RAG QUERY CLASSIFICATION PROMPTS
 # =============================================================================
 
-QUERY_CLASSIFICATION_PROMPT = """Classify this email query by INTENT. Return ONLY the type name, nothing else.
+QUERY_CLASSIFICATION_PROMPT = """Classify this email query by INTENT and extract the requested COUNT. Return in format: type,count
 
 Query: "{question}"
 {chat_context}
@@ -71,70 +71,79 @@ NOTE: Pronouns like "those", "them", "of these" reference previous context - foc
 Types and Examples:
 
 search-by-sender (find emails from specific company/person):
-- "last 10 ubereats mail"
-- "show me amazon emails"
-- "emails from uber"
-- "recent doordash orders"
-- "netflix messages"
-- "mail from john@example.com"
-- "from those senders, show me latest" (intent: get from sender)
+- "last 10 ubereats mail" → search-by-sender,10
+- "show me amazon emails" → search-by-sender,none
+- "emails from uber" → search-by-sender,none
+- "recent doordash orders" → search-by-sender,none
+- "twenty netflix messages" → search-by-sender,20
+- "mail from john@example.com" → search-by-sender,none
+- "from those senders, show me latest" → search-by-sender,none
 
 conversation (greetings, help, thanks):
-- "hello"
-- "hi there"
-- "thank you"
-- "thanks"
-- "what can you do"
-- "help me"
+- "hello" → conversation,none
+- "hi there" → conversation,none
+- "thank you" → conversation,none
+- "thanks" → conversation,none
+- "what can you do" → conversation,none
+- "help me" → conversation,none
 
 aggregation (count, statistics, rankings):
-- "how many emails total"
-- "who emails me most"
-- "count of unread messages"
-- "top 5 senders"
-- "how many from amazon"
-- "of those, how many are there" (intent: count)
-- "from them, who sent most" (intent: rank senders)
+- "how many emails total" → aggregation,none
+- "who emails me most" → aggregation,none
+- "count of unread messages" → aggregation,none
+- "top 5 senders" → aggregation,5
+- "how many from amazon" → aggregation,none
+- "of those, how many are there" → aggregation,none
+- "from them, who sent most" → aggregation,none
 
 temporal (get recent/latest without specific filter):
-- "last 10 emails"
-- "recent messages"
-- "newest emails"
-- "show me latest 5"
-- "oldest messages"
-- "from those, show me 5" (intent: get some from a set)
+- "last 10 emails" → temporal,10
+- "recent messages" → temporal,none
+- "newest emails" → temporal,none
+- "show me latest 5" → temporal,5
+- "oldest messages" → temporal,none
+- "from those, show me 5" → temporal,5
 
 filtered-temporal (recent + topic/keyword, NOT company):
-- "recent emails about the project"
-- "latest regarding the meeting"
-- "newest about vacation"
+- "recent emails about the project" → filtered-temporal,none
+- "latest 15 regarding the meeting" → filtered-temporal,15
+- "newest about vacation" → filtered-temporal,none
 
 classification (filter by label/category like spam, receipts, jobs):
-- "show me spam"
-- "job rejections"
-- "receipt emails"
-- "all promotions"
-- "of those, which are spam" (intent: filter by spam label)
-- "from them, show me receipts" (intent: filter by receipt label)
-- "which are interviews" (intent: filter by interview label)
+- "show me spam" → classification,none
+- "job rejections" → classification,none
+- "a dozen receipt emails" → classification,12
+- "all promotions" → classification,none
+- "of those, which are spam" → classification,none
+- "from them, show me receipts" → classification,none
+- "which are interviews" → classification,none
 
 search-by-attachment (find emails with files):
-- "emails with attachments"
-- "messages with files"
-- "which have attachments"
-- "of those, which have files" (intent: filter by attachment)
+- "emails with attachments" → search-by-attachment,none
+- "messages with files" → search-by-attachment,none
+- "which have attachments" → search-by-attachment,none
+- "of those, which have files" → search-by-attachment,none
 
 semantic (search by content/topic, NOT label):
-- "emails about the alpha project"
-- "regarding the client proposal"
-- "containing budget information"
-- "of those, which mention the deadline" (intent: search content)
+- "emails about the alpha project" → semantic,none
+- "regarding the client proposal" → semantic,none
+- "containing budget information" → semantic,none
+- "thirty messages about the deadline" → semantic,30
+- "of those, which mention the deadline" → semantic,none
 
 RULES:
 1. Company/brand names (uber, ubereats, amazon, netflix, etc.) → search-by-sender
 2. Labels (spam, receipts, jobs, promotions) → classification
 3. Counting/ranking → aggregation
 4. Pronouns ("those", "them") don't change the intent type
+
+COUNT EXTRACTION:
+- If user mentions a specific number (e.g., "10", "last 5", "top 20"), extract it
+- Handle written numbers: "twenty" → 20, "a dozen" → 12, "a few" → 3, "several" → 5
+- If no specific count mentioned, return "none"
+- Do NOT extract counts from: dates, years, percentages, addresses
+
+Output format: type,count (e.g., "temporal,10" or "semantic,none")
 
 Classification:"""
 

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class TemporalHandler(QueryHandler):
     """Handle time-based queries, both pure temporal and filtered-temporal."""
 
-    def handle(self, question: str, limit: int = 5, filtered: bool = False, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 10, filtered: bool = False, chat_history: Optional[list] = None) -> Dict:
         """Handle a temporal query.
 
         Args:
@@ -28,7 +28,7 @@ class TemporalHandler(QueryHandler):
         else:
             return self._handle_pure_temporal(question, limit, chat_history)
 
-    def handle_filtered(self, question: str, limit: int = 5, chat_history: Optional[list] = None) -> Dict:
+    def handle_filtered(self, question: str, limit: int = 10, chat_history: Optional[list] = None) -> Dict:
         """Handle a filtered-temporal query (time + content filter).
 
         Args:

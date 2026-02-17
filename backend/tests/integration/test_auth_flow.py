@@ -58,6 +58,8 @@ class TestAuthEndpoints:
 
     def test_auth_login_with_redirect_url(self, client):
         """Test login preserves redirect URL in state."""
+        from urllib.parse import unquote
+        
         redirect_url = "http://localhost:5173/dashboard"
         response = client.get(
             f"/api/auth/login?redirect_url={redirect_url}",
@@ -66,7 +68,8 @@ class TestAuthEndpoints:
         
         assert response.status_code == 307
         location = response.headers.get("location", "")
-        assert redirect_url in location
+        # Redirect URL will be URL-encoded in the state parameter
+        assert redirect_url in unquote(location)
 
     def test_auth_logout_clears_cookie(self, client):
         """Test logout clears auth cookie."""
@@ -111,28 +114,20 @@ class TestAuthCallbackFlow:
     @pytest.mark.asyncio
     async def test_auth_callback_success(self, client):
         """Test successful OAuth callback stores tokens and sets cookie."""
-        # Mock the token exchange
-        mock_token_response = MagicMock()
-        mock_token_response.status_code = 200
-        mock_token_response.json.return_value = {
-            "access_token": "mock_access_token",
-            "refresh_token": "mock_refresh_token",
-            "expires_in": 3600,
-        }
+        from datetime import datetime, timedelta, timezone
         
-        mock_userinfo_response = MagicMock()
-        mock_userinfo_response.status_code = 200
-        mock_userinfo_response.json.return_value = {
-            "email": "testuser@gmail.com",
-        }
+        # Mock the Google SDK Flow and Credentials
+        mock_credentials = MagicMock()
+        mock_credentials.token = "mock_access_token"
+        mock_credentials.refresh_token = "mock_refresh_token"
+        mock_credentials.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        mock_credentials.id_token = {"email": "testuser@gmail.com"}
         
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_token_response
-        mock_client.get.return_value = mock_userinfo_response
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = None
+        mock_flow = MagicMock()
+        mock_flow.fetch_token = MagicMock()
+        mock_flow.credentials = mock_credentials
         
-        with patch("src.auth.oauth.httpx.AsyncClient", return_value=mock_client):
+        with patch("src.auth.oauth._create_flow", return_value=mock_flow):
             response = client.get(
                 "/api/auth/callback?code=test_auth_code",
                 follow_redirects=False

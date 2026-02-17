@@ -216,7 +216,7 @@ uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
 ```bash
 curl -X POST http://127.0.0.1:8000/api/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"What invoices did I receive last month?","top_k":5}' | jq
+  -d '{"question":"What invoices did I receive last month?","top_k":10}' | jq
 ```
 
 - Start a background classify job via the API's sync endpoint (runs in background manager):

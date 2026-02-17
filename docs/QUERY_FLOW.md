@@ -47,7 +47,7 @@ User Query → API → RAG Engine → Classifier → Handler → LLM → Respons
 │ 1. API Request                                                  │
 │    POST /api/query                                              │
 │    {"question": "what are my last 10 ubereats mail",           │
-│     "top_k": 5, "chat_session_id": "abc123"}                   │
+│     "top_k": 10, "chat_session_id": "abc123"}                  │
 └────────────────────┬────────────────────────────────────────────┘
                      │
                      ▼
@@ -69,9 +69,11 @@ User Query → API → RAG Engine → Classifier → Handler → LLM → Respons
 │ 4. Query Classification (LLM Call #1)                          │
 │    - QueryClassifier.detect_query_type()                        │
 │    - LLM receives QUERY_CLASSIFICATION_PROMPT                   │
-│    - Returns one of 9 types: conversation, aggregation,         │
-│      search-by-sender, search-by-attachment, classification,    │
-│      filtered-temporal, temporal, semantic, list-previous-results│
+│    - Returns (type, count): type is one of 9 types, count is   │
+│      extracted limit from query (e.g., "last 10" → 10)          │
+│    - Types: conversation, aggregation, search-by-sender,        │
+│      search-by-attachment, classification, filtered-temporal,   │
+│      temporal, semantic, list-previous-results                  │
 │    - Intent-based: "What does user want to DO?"                │
 └────────────────────┬────────────────────────────────────────────┘
                      │
@@ -276,7 +278,7 @@ def _format_chat_history(chat_history):
 **File**: `backend/src/services/query_classifier.py`
 
 ```python
-def detect_query_type(question: str, chat_history: Optional[list] = None) -> str:
+def detect_query_type(question: str, chat_history: Optional[list] = None) -> Tuple[str, Optional[int]]:
     # 1. Format prompt with question
     prompt = QUERY_CLASSIFICATION_PROMPT.format(question=question)
     
@@ -616,10 +618,10 @@ def handle(question, limit, chat_history):
 
 ### Problem
 
-User says "last 10 ubereats mail" but default `top_k=5`:
-- Only 5 emails retrieved from database
-- LLM tries to list 10 items but only has 5
-- Answer cuts off mid-sentence (stops at item 8)
+User says "last 10 ubereats mail" but default `top_k=10`:
+- Only 10 emails retrieved from database by default
+- LLM tries to list exactly what user requested
+- Previously (when default was 5), answers would cut off mid-sentence
 
 ### Solution
 

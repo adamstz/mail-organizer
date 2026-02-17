@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class ClassificationHandler(QueryHandler):
     """Handle queries based on email classification labels."""
 
-    def handle(self, question: str, limit: int = 5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 10, chat_history: Optional[list] = None) -> Dict:
         """Handle a classification-based query.
 
         Args:

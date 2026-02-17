@@ -4,7 +4,7 @@ from .oauth import (
     get_google_auth_url,
     exchange_code_for_tokens,
     refresh_access_token,
-    get_user_email_from_token,
+    get_email_from_credentials,
 )
 from .middleware import (
     get_current_user,
@@ -18,7 +18,7 @@ __all__ = [
     "get_google_auth_url",
     "exchange_code_for_tokens",
     "refresh_access_token",
-    "get_user_email_from_token",
+    "get_email_from_credentials",
     "get_current_user",
     "require_auth",
     "create_jwt_token",

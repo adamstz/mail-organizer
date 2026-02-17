@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class AttachmentHandler(QueryHandler):
     """Handle search queries for emails with attachments."""
 
-    def handle(self, question: str, limit: int = 5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 10, chat_history: Optional[list] = None) -> Dict:
         """Handle a search-by-attachment query.
 
         Args:

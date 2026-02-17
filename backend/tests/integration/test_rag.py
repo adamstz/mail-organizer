@@ -379,7 +379,7 @@ class TestQueryClassifierIntegrationWithEngine:
         
         # Call through both paths
         via_engine = memory_rag_engine._detect_query_type(query)
-        via_classifier = memory_rag_engine.classifier.detect_query_type(query)
+        via_classifier, _ = memory_rag_engine.classifier.detect_query_type(query)
         
         assert via_engine == via_classifier
 

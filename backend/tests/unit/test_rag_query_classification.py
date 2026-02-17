@@ -269,18 +269,18 @@ class TestDirectQueryClassifier:
 
     def test_classifier_conversation(self, query_classifier):
         """Direct test of QueryClassifier for conversation queries."""
-        assert query_classifier.detect_query_type("hello") == "conversation"
-        assert query_classifier.detect_query_type("hi there") == "conversation"
-        assert query_classifier.detect_query_type("thanks") == "conversation"
+        assert query_classifier.detect_query_type("hello")[0] == "conversation"
+        assert query_classifier.detect_query_type("hi there")[0] == "conversation"
+        assert query_classifier.detect_query_type("thanks")[0] == "conversation"
 
     def test_classifier_aggregation(self, query_classifier):
         """Direct test of QueryClassifier for aggregation queries."""
-        result = query_classifier.detect_query_type("how many emails do I have")
+        result, _ = query_classifier.detect_query_type("how many emails do I have")
         assert result == "aggregation"
 
     def test_classifier_classification_labels(self, query_classifier):
         """Direct test of QueryClassifier for classification label queries."""
-        result = query_classifier.detect_query_type("show me finance emails")
+        result, _ = query_classifier.detect_query_type("show me finance emails")
         assert result == "classification"
 
     def test_classifier_delegation_matches_rag_engine(self, rag_engine, query_classifier):
@@ -289,7 +289,7 @@ class TestDirectQueryClassifier:
         
         for query in test_queries:
             rag_result = rag_engine._detect_query_type(query)
-            classifier_result = query_classifier.detect_query_type(query)
+            classifier_result, _ = query_classifier.detect_query_type(query)
             assert rag_result == classifier_result, \
                 f"Mismatch for '{query}': RAG={rag_result}, Classifier={classifier_result}"
 

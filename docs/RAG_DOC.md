@@ -56,7 +56,7 @@ curl "http://localhost:8000/api/similar/<message_id>?limit=5" | jq
 # Semantic query (requires LLM running)
 curl -X POST http://localhost:8000/api/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"Show me invoices from last month","top_k":5}' | jq
+  -d '{"question":"Show me invoices from last month","top_k":10}' | jq
 
 # terminal 2: run test
 cd backend
@@ -167,7 +167,7 @@ Semantic search with LLM answer generation. See [QUERY_FLOW.md](QUERY_FLOW.md) f
 ```json
 {
   "question": "Show me invoices from last month",
-  "top_k": 5,
+  "top_k": 10,
   "similarity_threshold": 0.3
 }
 ```

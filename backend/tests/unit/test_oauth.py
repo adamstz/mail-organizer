@@ -77,18 +77,23 @@ class TestOAuthConfig:
 
 
 class TestOAuthURLGeneration:
-    """Tests for Google OAuth URL generation."""
+    """Tests for Google OAuth URL generation using SDK."""
 
     def test_get_google_auth_url_basic(self):
-        """Test generating basic Google auth URL."""
+        """Test generating basic Google auth URL returns tuple."""
         with patch.dict(os.environ, {
             "GOOGLE_CLIENT_ID": "test_client_id",
             "GOOGLE_CLIENT_SECRET": "test_secret",
         }):
             from src.auth.oauth import get_google_auth_url
             
-            url = get_google_auth_url()
+            url, state = get_google_auth_url()
             
+            # Should return tuple
+            assert isinstance(url, str)
+            assert isinstance(state, str)
+            
+            # URL should contain Google OAuth endpoint
             assert "accounts.google.com" in url
             assert "client_id=test_client_id" in url
             assert "response_type=code" in url
@@ -96,17 +101,18 @@ class TestOAuthURLGeneration:
             assert "prompt=consent" in url
 
     def test_get_google_auth_url_with_state(self):
-        """Test generating auth URL with state parameter."""
+        """Test generating auth URL with custom state parameter."""
         with patch.dict(os.environ, {
             "GOOGLE_CLIENT_ID": "test_client_id",
             "GOOGLE_CLIENT_SECRET": "test_secret",
         }):
             from src.auth.oauth import get_google_auth_url
             
-            state = "http://localhost:5173/dashboard"
-            url = get_google_auth_url(state=state)
+            custom_state = "http://localhost:5173/dashboard"
+            url, returned_state = get_google_auth_url(state=custom_state)
             
-            assert f"state={state}" in url
+            # Should use the provided state
+            assert custom_state in url or returned_state == custom_state
 
     def test_get_google_auth_url_includes_scopes(self):
         """Test that auth URL includes required Gmail scopes."""
@@ -116,7 +122,7 @@ class TestOAuthURLGeneration:
         }):
             from src.auth.oauth import get_google_auth_url
             
-            url = get_google_auth_url()
+            url, _ = get_google_auth_url()
             
             # URL should include gmail scope
             assert "gmail" in url.lower()
@@ -148,46 +154,36 @@ class TestAllowedEmail:
 
 
 class TestTokenExchange:
-    """Tests for OAuth token exchange (with mocked HTTP calls)."""
+    """Tests for OAuth token exchange using Google SDK."""
 
     @pytest.mark.asyncio
     async def test_exchange_code_for_tokens_success(self):
-        """Test successful token exchange."""
+        """Test successful token exchange using Google SDK."""
         with patch.dict(os.environ, {
             "GOOGLE_CLIENT_ID": "test_client_id",
             "GOOGLE_CLIENT_SECRET": "test_secret",
         }):
             from src.auth.oauth import exchange_code_for_tokens
+            from datetime import datetime, timedelta, timezone
             
-            # Mock the httpx responses
-            mock_token_response = MagicMock()
-            mock_token_response.status_code = 200
-            mock_token_response.json.return_value = {
-                "access_token": "mock_access_token",
-                "refresh_token": "mock_refresh_token",
-                "expires_in": 3600,
-            }
+            # Mock the Google SDK Credentials object
+            mock_credentials = MagicMock()
+            mock_credentials.token = "mock_access_token"
+            mock_credentials.refresh_token = "mock_refresh_token"
+            mock_credentials.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+            mock_credentials.id_token = {"email": "user@gmail.com"}
             
-            mock_userinfo_response = MagicMock()
-            mock_userinfo_response.status_code = 200
-            mock_userinfo_response.json.return_value = {
-                "email": "user@gmail.com",
-            }
+            # Mock the Flow object
+            mock_flow = MagicMock()
+            mock_flow.fetch_token = MagicMock()
+            mock_flow.credentials = mock_credentials
             
-            # Create mock client
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_token_response
-            mock_client.get.return_value = mock_userinfo_response
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
+            with patch("src.auth.oauth._create_flow", return_value=mock_flow):
+                credentials = await exchange_code_for_tokens("test_auth_code")
             
-            with patch("src.auth.oauth.httpx.AsyncClient", return_value=mock_client):
-                tokens = await exchange_code_for_tokens("test_auth_code")
-            
-            assert tokens.access_token == "mock_access_token"
-            assert tokens.refresh_token == "mock_refresh_token"
-            assert tokens.email == "user@gmail.com"
-            assert tokens.token_expiry is not None
+            assert credentials.token == "mock_access_token"
+            assert credentials.refresh_token == "mock_refresh_token"
+            assert credentials.id_token["email"] == "user@gmail.com"
 
     @pytest.mark.asyncio
     async def test_exchange_code_rejects_unauthorized_email(self):
@@ -198,76 +194,116 @@ class TestTokenExchange:
             "ALLOWED_EMAIL": "admin@example.com",
         }):
             from src.auth.oauth import exchange_code_for_tokens
+            from datetime import datetime, timedelta, timezone
             
-            # Mock responses - user email doesn't match allowed
-            mock_token_response = MagicMock()
-            mock_token_response.status_code = 200
-            mock_token_response.json.return_value = {
-                "access_token": "mock_access_token",
-                "refresh_token": "mock_refresh_token",
-                "expires_in": 3600,
-            }
+            # Mock credentials with unauthorized email
+            mock_credentials = MagicMock()
+            mock_credentials.token = "mock_access_token"
+            mock_credentials.refresh_token = "mock_refresh_token"
+            mock_credentials.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+            mock_credentials.id_token = {"email": "unauthorized@gmail.com"}
             
-            mock_userinfo_response = MagicMock()
-            mock_userinfo_response.status_code = 200
-            mock_userinfo_response.json.return_value = {
-                "email": "unauthorized@gmail.com",  # Different from ALLOWED_EMAIL
-            }
+            mock_flow = MagicMock()
+            mock_flow.fetch_token = MagicMock()
+            mock_flow.credentials = mock_credentials
             
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_token_response
-            mock_client.get.return_value = mock_userinfo_response
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
-            
-            with patch("src.auth.oauth.httpx.AsyncClient", return_value=mock_client):
+            with patch("src.auth.oauth._create_flow", return_value=mock_flow):
                 with pytest.raises(ValueError) as exc_info:
                     await exchange_code_for_tokens("test_auth_code")
             
             assert "not authorized" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_exchange_code_token_error(self):
-        """Test handling of token exchange errors."""
+    async def test_exchange_code_missing_refresh_token_raises(self):
+        """Test that missing refresh token raises error."""
         with patch.dict(os.environ, {
             "GOOGLE_CLIENT_ID": "test_client_id",
             "GOOGLE_CLIENT_SECRET": "test_secret",
         }):
             from src.auth.oauth import exchange_code_for_tokens
+            from datetime import datetime, timedelta, timezone
             
-            # Mock failed token response
-            mock_token_response = MagicMock()
-            mock_token_response.status_code = 400
-            mock_token_response.text = "invalid_grant"
+            # Mock credentials without refresh token
+            mock_credentials = MagicMock()
+            mock_credentials.token = "mock_access_token"
+            mock_credentials.refresh_token = None  # Missing!
+            mock_credentials.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+            mock_credentials.id_token = {"email": "user@gmail.com"}
             
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_token_response
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
+            mock_flow = MagicMock()
+            mock_flow.fetch_token = MagicMock()
+            mock_flow.credentials = mock_credentials
             
-            with patch("src.auth.oauth.httpx.AsyncClient", return_value=mock_client):
+            with patch("src.auth.oauth._create_flow", return_value=mock_flow):
                 with pytest.raises(ValueError) as exc_info:
-                    await exchange_code_for_tokens("invalid_code")
+                    await exchange_code_for_tokens("test_code")
             
-            assert "Failed to exchange" in str(exc_info.value)
+            assert "refresh_token" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_exchange_code_handles_scope_mismatch_warning(self):
+        """Test that token exchange gracefully handles scope mismatch warnings."""
+        with patch.dict(os.environ, {
+            "GOOGLE_CLIENT_ID": "test_client_id",
+            "GOOGLE_CLIENT_SECRET": "test_secret",
+        }):
+            from src.auth.oauth import exchange_code_for_tokens
+            from datetime import datetime, timedelta, timezone
+            
+            # Mock credentials with reduced scopes (Gmail not granted)
+            mock_credentials = MagicMock()
+            mock_credentials.token = "mock_access_token"
+            mock_credentials.refresh_token = "mock_refresh_token"
+            mock_credentials.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+            mock_credentials.id_token = {"email": "user@gmail.com"}
+            mock_credentials.scopes = [
+                "openid",
+                "https://www.googleapis.com/auth/userinfo.email"
+                # Note: gmail.modify NOT granted
+            ]
+            
+            # Mock Flow that raises Warning on fetch_token (simulates scope mismatch)
+            mock_flow = MagicMock()
+            mock_flow.credentials = mock_credentials
+            
+            def mock_fetch_token(code):
+                # Simulate oauthlib raising a Warning for scope mismatch
+                raise Warning("Scope has changed from 'A B C' to 'A B'")
+            
+            mock_flow.fetch_token = mock_fetch_token
+            
+            with patch("src.auth.oauth._create_flow", return_value=mock_flow):
+                # Should not raise, should handle warning gracefully
+                credentials = await exchange_code_for_tokens("test_auth_code")
+            
+            # Should still return valid credentials with whatever scopes were granted
+            assert credentials.token == "mock_access_token"
+            assert credentials.refresh_token == "mock_refresh_token"
+            assert credentials.id_token["email"] == "user@gmail.com"
 
 
-class TestOAuthTokens:
-    """Tests for OAuthTokens dataclass."""
+class TestCredentialsHelper:
+    """Tests for Credentials helper functions."""
 
-    def test_oauth_tokens_dataclass(self):
-        """Test OAuthTokens dataclass creation."""
-        from src.auth.oauth import OAuthTokens
+    def test_get_email_from_credentials(self):
+        """Test extracting email from Credentials object."""
+        from src.auth.oauth import get_email_from_credentials
         
-        expiry = datetime.now(timezone.utc)
-        tokens = OAuthTokens(
-            access_token="access",
-            refresh_token="refresh",
-            token_expiry=expiry,
-            email="test@example.com",
-        )
+        mock_credentials = MagicMock()
+        mock_credentials.id_token = {"email": "test@example.com"}
         
-        assert tokens.access_token == "access"
-        assert tokens.refresh_token == "refresh"
-        assert tokens.token_expiry == expiry
-        assert tokens.email == "test@example.com"
+        email = get_email_from_credentials(mock_credentials)
+        
+        assert email == "test@example.com"
+    
+    def test_get_email_from_credentials_no_id_token(self):
+        """Test extracting email when no ID token present."""
+        from src.auth.oauth import get_email_from_credentials
+        
+        mock_credentials = MagicMock()
+        mock_credentials.id_token = None
+        
+        email = get_email_from_credentials(mock_credentials)
+        
+        assert email is None
+

@@ -34,7 +34,7 @@ class SemanticHandler(QueryHandler):
         self,
         question: str,
         results: List[Tuple],
-        top_k: int = 5
+        top_k: int = 10
     ) -> List[Tuple]:
         """Rerank retrieval results using cross-encoder for better relevance.
 

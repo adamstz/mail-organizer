@@ -100,7 +100,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ isReconnect = false, onCancel }) 
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 4 }}>
           {isReconnect 
             ? 'This will refresh your Gmail access permissions.'
-            : 'This application requires read-only access to your Gmail to organize and classify your emails.'
+            : 'You will be asked to grant permissions to read, modify, and delete your emails.'
           }
         </Typography>
       </Paper>

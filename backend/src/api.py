@@ -7,7 +7,7 @@ import logging
 import asyncio
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 
 from . import storage
@@ -164,7 +164,7 @@ async def auth_login(
         # If force=true, skip all checks and go straight to OAuth
         if force:
             logger.info("Force OAuth flow requested, redirecting to Google OAuth")
-            auth_url = get_google_auth_url(state=redirect_url)
+            auth_url, _ = get_google_auth_url(state=redirect_url)
             return RedirectResponse(url=auth_url)
 
         # Check if user already has a valid JWT session AND valid Gmail tokens
@@ -176,7 +176,7 @@ async def auth_login(
             else:
                 # User has JWT but Gmail is disconnected - need OAuth
                 logger.info(f"User {user.email} has valid JWT but Gmail disconnected, redirecting to OAuth")
-                auth_url = get_google_auth_url(state=redirect_url)
+                auth_url, _ = get_google_auth_url(state=redirect_url)
                 return RedirectResponse(url=auth_url)
 
         # Check if we can find OAuth tokens in the database
@@ -246,7 +246,7 @@ async def auth_login(
 
         # No valid tokens found, proceed with full OAuth flow
         logger.info("No valid tokens found, redirecting to Google OAuth consent screen")
-        auth_url = get_google_auth_url(state=redirect_url)
+        auth_url, _ = get_google_auth_url(state=redirect_url)
         return RedirectResponse(url=auth_url)
 
     except ValueError as e:
@@ -267,21 +267,27 @@ async def auth_callback(code: str = Query(...), state: Optional[str] = Query(Non
     logger.info("Received OAuth callback")
 
     try:
-        # Exchange code for tokens
-        tokens = await exchange_code_for_tokens(code)
+        # Exchange code for tokens (returns Credentials object from Google SDK)
+        credentials = await exchange_code_for_tokens(code, state=state)
+
+        # Extract email from ID token
+        from .auth.oauth import get_email_from_credentials
+        email = get_email_from_credentials(credentials)
+        if not email:
+            raise ValueError("Could not extract email from credentials")
 
         # Store tokens in database
         storage.save_oauth_tokens(
-            email=tokens.email,
-            access_token=tokens.access_token,
-            refresh_token=tokens.refresh_token,
-            token_expiry=tokens.token_expiry,
+            email=email,
+            access_token=credentials.token,
+            refresh_token=credentials.refresh_token,
+            token_expiry=credentials.expiry or datetime.now(timezone.utc),
         )
 
-        logger.info(f"OAuth tokens stored for user: {tokens.email}")
+        logger.info(f"OAuth tokens stored for user: {email}")
 
         # Create JWT for session
-        jwt_token = create_jwt_token(tokens.email)
+        jwt_token = create_jwt_token(email)
 
         # Determine redirect URL
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
@@ -1448,7 +1454,7 @@ class QueryRequest(BaseModel):
     """Request model for RAG queries."""
     question: str
     chat_session_id: Optional[str] = None
-    top_k: Optional[int] = 5
+    top_k: Optional[int] = None  # Let backend extract from query (LLM → regex → default 10)
     similarity_threshold: Optional[float] = 0.5
     model: Optional[str] = None
 

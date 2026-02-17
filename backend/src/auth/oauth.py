@@ -1,4 +1,4 @@
-"""Google OAuth2 flow handlers.
+"""Google OAuth2 flow handlers using Google's official SDK.
 
 Handles the OAuth2 authorization code flow for Gmail access:
 1. Generate authorization URL for user consent
@@ -12,33 +12,24 @@ from __future__ import annotations
 import os
 import logging
 from typing import Optional
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import httpx
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
 
-# OAuth2 endpoints
-GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
-
 # Required scopes for Gmail access
+# Using gmail.modify for read, modify, and delete (not send)
 GMAIL_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
-
-
-@dataclass
-class OAuthTokens:
-    """Container for OAuth token data."""
-    access_token: str
-    refresh_token: str
-    token_expiry: datetime
-    email: str
 
 
 def get_backend_url() -> str:
@@ -80,91 +71,122 @@ def get_allowed_email() -> Optional[str]:
     return os.environ.get("ALLOWED_EMAIL")
 
 
-def get_google_auth_url(state: Optional[str] = None) -> str:
-    """Generate the Google OAuth2 authorization URL.
+def _create_flow(state: Optional[str] = None) -> Flow:
+    """Create a Google OAuth Flow instance.
 
     Args:
         state: Optional state parameter for CSRF protection
 
     Returns:
-        URL to redirect user to for Google OAuth consent
-    """
-    client_id, _, redirect_uri = get_oauth_config()
-
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(GMAIL_SCOPES),
-        "access_type": "offline",  # Request refresh token
-        "prompt": "consent",  # Force consent to ensure refresh token
-    }
-
-    if state:
-        params["state"] = state
-
-    query_string = "&".join(f"{k}={v}" for k, v in params.items())
-    return f"{GOOGLE_AUTH_URL}?{query_string}"
-
-
-async def exchange_code_for_tokens(code: str) -> OAuthTokens:
-    """Exchange authorization code for access and refresh tokens.
-
-    Args:
-        code: Authorization code from OAuth callback
-
-    Returns:
-        OAuthTokens containing access_token, refresh_token, expiry, and email
-
-    Raises:
-        ValueError: If token exchange fails or user email doesn't match ALLOWED_EMAIL
+        Configured Flow instance
     """
     client_id, client_secret, redirect_uri = get_oauth_config()
 
-    # Exchange code for tokens
-    async with httpx.AsyncClient() as client:
-        token_response = await client.post(
-            GOOGLE_TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": redirect_uri,
-            },
-        )
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
 
-        if token_response.status_code != 200:
-            logger.error(f"Token exchange failed: {token_response.text}")
-            raise ValueError(f"Failed to exchange code for tokens: {token_response.text}")
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=GMAIL_SCOPES,
+        redirect_uri=redirect_uri,
+        state=state,
+    )
 
-        token_data = token_response.json()
+    return flow
 
-        access_token = token_data.get("access_token")
-        refresh_token = token_data.get("refresh_token")
-        expires_in = token_data.get("expires_in", 3600)
 
-        if not access_token or not refresh_token:
-            raise ValueError("Token response missing access_token or refresh_token")
+def get_google_auth_url(state: Optional[str] = None) -> tuple[str, str]:
+    """Generate the Google OAuth2 authorization URL using Google SDK.
 
-        # Calculate token expiry
-        token_expiry = datetime.now(timezone.utc).timestamp() + expires_in
-        expiry_dt = datetime.fromtimestamp(token_expiry, tz=timezone.utc)
+    Args:
+        state: Optional state parameter for CSRF protection
 
-        # Get user email from userinfo endpoint
-        userinfo_response = await client.get(
-            GOOGLE_USERINFO_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
+    Returns:
+        Tuple of (authorization_url, state)
+        If state was provided, returns the same state. Otherwise returns SDK-generated state.
+    """
+    flow = _create_flow(state=state)
 
-        if userinfo_response.status_code != 200:
-            raise ValueError("Failed to get user info from Google")
+    auth_url, returned_state = flow.authorization_url(
+        access_type="offline",  # Request refresh token
+        prompt="consent",  # Force consent to ensure refresh token
+        include_granted_scopes="true",
+    )
 
-        userinfo = userinfo_response.json()
-        email = userinfo.get("email")
+    logger.info(f"Generated OAuth URL using Google SDK")
+    return auth_url, returned_state
 
-        if not email:
-            raise ValueError("Could not get email from Google userinfo")
+
+async def exchange_code_for_tokens(code: str, state: Optional[str] = None) -> Credentials:
+    """Exchange authorization code for access and refresh tokens using Google SDK.
+
+    Args:
+        code: Authorization code from OAuth callback
+        state: Optional state parameter for CSRF verification
+
+    Returns:
+        google.oauth2.credentials.Credentials object containing tokens and user info
+
+    Raises:
+        ValueError: If token exchange fails or user email doesn't match ALLOWED_EMAIL
+        RefreshError: If the OAuth flow fails
+    """
+    try:
+        flow = _create_flow(state=state)
+
+        # Exchange authorization code for tokens
+        # oauthlib may raise Warning exception if returned scopes differ from requested
+        try:
+            flow.fetch_token(code=code)
+        except Warning as w:
+            # This is expected when Google grants fewer scopes than requested
+            # The credentials are still populated, so we can continue
+            logger.warning(f"Scope mismatch during token exchange (this is expected): {w}")
+
+        credentials = flow.credentials
+
+        # Verify we got credentials despite potential scope mismatch
+        if not credentials:
+            raise ValueError("Failed to obtain credentials from OAuth flow")
+
+        if not credentials.refresh_token:
+            raise ValueError("Token response missing refresh_token. Ensure prompt=consent is set.")
+
+        # Extract email from ID token
+        # The ID token might be a JWT string that needs to be decoded
+        raw_id_token = credentials.id_token
+        if not raw_id_token:
+            logger.error(f"Credentials object has no id_token")
+            raise ValueError("Could not get ID token from credentials")
+
+        # Decode the ID token if it's a string (JWT)
+        if isinstance(raw_id_token, str):
+            try:
+                client_id, _, _ = get_oauth_config()
+                id_token_claims = google_id_token.verify_oauth2_token(
+                    raw_id_token,
+                    google_requests.Request(),
+                    client_id
+                )
+            except Exception as e:
+                logger.error(f"Failed to verify ID token: {e}")
+                raise ValueError(f"Failed to decode ID token: {e}")
+        else:
+            # Already a dict
+            id_token_claims = raw_id_token
+
+        if "email" not in id_token_claims:
+            logger.error(f"ID token missing email claim. Claims: {id_token_claims.keys()}")
+            raise ValueError("ID token does not contain email claim")
+
+        email = id_token_claims["email"]
 
         # Check if email is allowed (if restriction is set)
         allowed_email = get_allowed_email()
@@ -172,83 +194,95 @@ async def exchange_code_for_tokens(code: str) -> OAuthTokens:
             logger.warning(f"Rejected OAuth for email {email} (allowed: {allowed_email})")
             raise ValueError(f"Email {email} is not authorized. Only {allowed_email} is allowed.")
 
-        logger.info(f"Successfully exchanged code for tokens for user: {email}")
+        # Log what scopes were actually granted
+        granted_scopes = credentials.scopes or []
+        logger.info(f"Successfully exchanged code for tokens for user: {email}, granted scopes: {granted_scopes}")
+        return credentials
 
-        return OAuthTokens(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_expiry=expiry_dt,
-            email=email,
-        )
+    except RefreshError as e:
+        logger.error(f"Token exchange failed: {e}")
+        raise ValueError(f"Failed to exchange code for tokens: {e}") from e
+    except ValueError:
+        # Re-raise ValueError as-is (from our own validation above)
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during token exchange: {e}")
+        raise
 
 
-async def refresh_access_token(refresh_token: str) -> tuple[str, datetime]:
-    """Refresh an expired access token.
+async def refresh_access_token(refresh_token_str: str) -> tuple[str, datetime]:
+    """Refresh an expired access token using Google SDK.
 
     Args:
-        refresh_token: The refresh token to use
+        refresh_token_str: The refresh token to use
 
     Returns:
         Tuple of (new_access_token, new_expiry_datetime)
 
     Raises:
         ValueError: If token refresh fails
+        RefreshError: If the refresh operation fails
     """
-    client_id, client_secret, _ = get_oauth_config()
+    try:
+        client_id, client_secret, _ = get_oauth_config()
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            GOOGLE_TOKEN_URL,
-            data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            },
+        # Create a Credentials object from the refresh token
+        credentials = Credentials(
+            token=None,  # No access token yet
+            refresh_token=refresh_token_str,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=GMAIL_SCOPES,
         )
 
-        if response.status_code != 200:
-            logger.error(f"Token refresh failed: {response.text}")
-            raise ValueError(f"Failed to refresh token: {response.text}")
+        # Refresh the credentials
+        request = Request()
+        credentials.refresh(request)
 
-        token_data = response.json()
-        access_token = token_data.get("access_token")
-        expires_in = token_data.get("expires_in", 3600)
-
-        if not access_token:
+        if not credentials.token:
             raise ValueError("Token refresh response missing access_token")
 
-        token_expiry = datetime.now(timezone.utc).timestamp() + expires_in
-        expiry_dt = datetime.fromtimestamp(token_expiry, tz=timezone.utc)
+        # Get expiry datetime (SDK provides this directly)
+        expiry_dt = credentials.expiry or datetime.now(timezone.utc)
 
-        return access_token, expiry_dt
+        logger.info("Successfully refreshed access token")
+        return credentials.token, expiry_dt
+
+    except RefreshError as e:
+        logger.error(f"Token refresh failed: {e}")
+        raise ValueError(f"Failed to refresh token: {e}") from e
+    except Exception as e:
+        logger.error(f"Unexpected error during token refresh: {e}")
+        raise
 
 
-async def get_user_email_from_token(access_token: str) -> str:
-    """Get the user's email address from an access token.
+def get_email_from_credentials(credentials: Credentials) -> Optional[str]:
+    """Extract email from Credentials ID token.
 
     Args:
-        access_token: Valid Google access token
+        credentials: Google OAuth2 Credentials object
 
     Returns:
-        User's email address
-
-    Raises:
-        ValueError: If unable to get user info
+        User's email address if available in ID token, None otherwise
     """
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            GOOGLE_USERINFO_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
+    if not credentials.id_token:
+        return None
 
-        if response.status_code != 200:
-            raise ValueError("Failed to get user info from Google")
+    # Handle both JWT string and dict formats
+    if isinstance(credentials.id_token, str):
+        try:
+            client_id, _, _ = get_oauth_config()
+            id_token_claims = google_id_token.verify_oauth2_token(
+                credentials.id_token,
+                google_requests.Request(),
+                client_id
+            )
+            return id_token_claims.get("email")
+        except Exception as e:
+            logger.debug(f"Failed to decode ID token: {e}")
+            return None
+    else:
+        # Already a dict
+        return credentials.id_token.get("email")
 
-        userinfo = response.json()
-        email = userinfo.get("email")
-
-        if not email:
-            raise ValueError("Could not get email from Google userinfo")
-
-        return email

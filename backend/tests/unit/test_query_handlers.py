@@ -28,6 +28,7 @@ from src.services.query_handlers.classification import ClassificationHandler
 from src.services.query_handlers.temporal import TemporalHandler
 from src.services.query_handlers.semantic import SemanticHandler
 from src.models.message import MailMessage
+from src.utils.query_utils import extract_number_from_query
 
 
 class TestConversationHandler:
@@ -262,27 +263,23 @@ class TestSenderHandler:
 
     def test_extract_number_from_query(self, handler_dependencies):
         """Should extract numbers from queries like 'last 10 emails'."""
-        handler = SenderHandler(
-            storage=handler_dependencies['storage'],
-            llm=handler_dependencies['llm'],
-            context_builder=handler_dependencies['context_builder'],
-        )
+        # Test the shared extract_number_from_query function (SenderHandler uses this)
         
         # Test various number extraction patterns
-        assert handler._extract_number_from_query("what are my last 10 ubereats mail") == 10
-        assert handler._extract_number_from_query("show me 20 amazon emails") == 20
-        assert handler._extract_number_from_query("get 5 messages from linkedin") == 5
-        assert handler._extract_number_from_query("latest 15 github emails") == 15
-        assert handler._extract_number_from_query("recent 3 notifications") == 3
+        assert extract_number_from_query("what are my last 10 ubereats mail", default=None) == 10
+        assert extract_number_from_query("show me 20 amazon emails", default=None) == 20
+        assert extract_number_from_query("get 5 messages from linkedin", default=None) == 5
+        assert extract_number_from_query("latest 15 github emails", default=None) == 15
+        assert extract_number_from_query("recent 3 notifications", default=None) == 3
         
         # No number specified
-        assert handler._extract_number_from_query("show me uber emails") is None
+        assert extract_number_from_query("show me uber emails", default=None) is None
         
-        # Out of range (too large)
-        assert handler._extract_number_from_query("last 200 emails") is None
+        # Out of range (too large) - should be capped at 100
+        assert extract_number_from_query("last 200 emails", default=None) == 100
         
-        # Zero or negative
-        assert handler._extract_number_from_query("last 0 emails") is None
+        # Zero should be ignored and return None (when default=None)
+        assert extract_number_from_query("last 0 emails", default=None) is None
 
     def test_handle_respects_extracted_limit(self, handler_dependencies):
         """Should use extracted number as limit when specified in query."""

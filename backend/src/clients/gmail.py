@@ -9,7 +9,7 @@ from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import Resource, build
 
 DEFAULT_GMAIL_SCOPES: Sequence[str] = (
-    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
 )
 
 

@@ -12,6 +12,7 @@ from .llm_processor import LLMProcessor
 from .context_builder import ContextBuilder
 from .query_classifier import QueryClassifier
 from .result_cache import get_result_cache
+from ..utils.query_utils import extract_number_from_query
 from .query_handlers import (
     ConversationHandler,
     AggregationHandler,
@@ -46,7 +47,7 @@ class RAGQueryEngine:
         storage: StorageBackend,
         embedding_service: EmbeddingService,
         llm_processor: LLMProcessor,
-        top_k: int = 5
+        top_k: int = 10
     ):
         """Initialize RAG engine.
 
@@ -54,7 +55,7 @@ class RAGQueryEngine:
             storage: Storage backend with vector search
             embedding_service: Service for generating embeddings
             llm_processor: LangChain-based LLM processor
-            top_k: Number of similar emails to retrieve (default: 5)
+            top_k: Number of similar emails to retrieve (default: 10)
         """
         self.storage = storage
         self.embedder = embedding_service
@@ -121,19 +122,30 @@ class RAGQueryEngine:
                 - query_type: The detected query type
                 - cached_message_ids: List of message IDs (for caching, max 500)
         """
-        k = top_k or self.top_k
+        # Extract number from query as fallback (LLM will override if it returns a count)
+        extracted_limit = extract_number_from_query(question, default=self.top_k)
         chat_history = chat_history or []
 
         logger.info(f"[RAG QUERY] Processing question with {self.llm.provider}/{self.llm.model}")
-        logger.info(f"[RAG QUERY] Question: '{question}', top_k: {k}, threshold: {similarity_threshold}, session: {session_id}")
+        logger.info(
+            f"[RAG QUERY] Question: '{question}', extracted_limit: {extracted_limit}, "
+            f"threshold: {similarity_threshold}, session: {session_id}"
+        )
         if chat_history:
             logger.info(f"[RAG QUERY] Using {len(chat_history)} previous messages for context")
 
-        # Detect query type
+        # Detect query type and desired count from LLM
         logger.info("[RAG QUERY] ========== Starting Query Classification ==========")
-        query_type = self.classifier.detect_query_type(question, chat_history)
+        query_type, llm_count = self.classifier.detect_query_type(question, chat_history)
         logger.info("[RAG QUERY] ========== Classification Complete ==========")
-        logger.info(f"[RAG QUERY] Detected query type: {query_type}")
+        logger.info(f"[RAG QUERY] Detected query type: {query_type}, LLM count: {llm_count}")
+
+        # Use LLM-extracted count if available, otherwise use extracted_limit from regex fallback
+        if llm_count is not None:
+            extracted_limit = llm_count
+            logger.info(f"[RAG QUERY] Using LLM-extracted count: {llm_count}")
+        k = top_k if top_k is not None else extracted_limit
+        logger.info(f"[RAG QUERY] Final limit k: {k} (top_k={top_k}, extracted_limit={extracted_limit})")
 
         # Get the appropriate handler
         handler = self.handlers.get(query_type)
@@ -220,5 +232,7 @@ class RAGQueryEngine:
         """Detect query type - delegates to classifier.
 
         Kept for backwards compatibility.
+        Returns only the query type (ignores count).
         """
-        return self.classifier.detect_query_type(question)
+        query_type, _ = self.classifier.detect_query_type(question)
+        return query_type

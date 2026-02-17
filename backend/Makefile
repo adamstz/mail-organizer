@@ -1,7 +1,7 @@
 .PHONY: help test test-all test-unit test-smoke test-fast test-integration test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox pull-inbox-repull run
 
 # Python virtual environment
-VENV_PATH = ../.venv
+VENV_PATH = ./.venv
 PYTHON = $(VENV_PATH)/bin/python
 PYTEST = $(PYTHON) -m pytest
 
