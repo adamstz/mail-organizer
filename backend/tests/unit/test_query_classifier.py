@@ -36,7 +36,8 @@ class TestQueryClassifierInit:
         """Should have correct set of valid query types."""
         expected_types = {
             'conversation', 'aggregation', 'search-by-sender', 'search-by-attachment',
-            'classification', 'filtered-temporal', 'temporal', 'semantic'
+            'classification', 'filtered-temporal', 'temporal', 'semantic',
+            'list-previous-results'
         }
         assert query_classifier.VALID_TYPES == expected_types
 
@@ -46,27 +47,27 @@ class TestDetectQueryTypeConversation:
 
     def test_detect_hello(self, query_classifier):
         """Should classify 'hello' as conversation."""
-        result = query_classifier.detect_query_type("hello")
+        result, _ = query_classifier.detect_query_type("hello")
         assert result == "conversation"
 
     def test_detect_hi(self, query_classifier):
         """Should classify 'hi' as conversation."""
-        result = query_classifier.detect_query_type("hi")
+        result, _ = query_classifier.detect_query_type("hi")
         assert result == "conversation"
 
     def test_detect_thanks(self, query_classifier):
         """Should classify 'thanks' as conversation."""
-        result = query_classifier.detect_query_type("thanks")
+        result, _ = query_classifier.detect_query_type("thanks")
         assert result == "conversation"
 
     def test_detect_help(self, query_classifier):
         """Should classify 'help' as conversation."""
-        result = query_classifier.detect_query_type("help")
+        result, _ = query_classifier.detect_query_type("help")
         assert result == "conversation"
 
     def test_detect_what_can_you_do(self, query_classifier):
         """Should classify 'what can you do' as conversation."""
-        result = query_classifier.detect_query_type("what can you do")
+        result, _ = query_classifier.detect_query_type("what can you do")
         assert result == "conversation"
 
 
@@ -75,22 +76,22 @@ class TestDetectQueryTypeAggregation:
 
     def test_detect_how_many_emails(self, query_classifier):
         """Should classify 'how many emails' as aggregation."""
-        result = query_classifier.detect_query_type("how many emails do I have")
+        result, _ = query_classifier.detect_query_type("how many emails do I have")
         assert result == "aggregation"
 
     def test_detect_how_many_topic(self, query_classifier):
         """Should classify 'how many [topic]' as aggregation."""
-        result = query_classifier.detect_query_type("how many uber emails do I have")
+        result, _ = query_classifier.detect_query_type("how many uber emails do I have")
         assert result == "aggregation"
 
     def test_detect_count_emails(self, query_classifier):
         """Should classify count queries as aggregation."""
-        result = query_classifier.detect_query_type("count my amazon emails")
+        result, _ = query_classifier.detect_query_type("count my amazon emails")
         assert result == "aggregation"
 
     def test_detect_number_of(self, query_classifier):
         """Should classify 'number of' queries as aggregation."""
-        result = query_classifier.detect_query_type("what is the number of unread messages")
+        result, _ = query_classifier.detect_query_type("what is the number of unread messages")
         assert result == "aggregation"
 
 
@@ -99,19 +100,19 @@ class TestDetectQueryTypeSender:
 
     def test_detect_emails_from(self, query_classifier):
         """Should classify 'emails from X' as search-by-sender."""
-        result = query_classifier.detect_query_type("emails from uber")
+        result, _ = query_classifier.detect_query_type("emails from uber")
         # May be classified as search-by-sender or semantic depending on LLM
         assert result in ("search-by-sender", "semantic", "aggregation")
 
     def test_detect_all_emails_from(self, query_classifier):
         """Should classify 'all emails from X' as search-by-sender."""
-        result = query_classifier.detect_query_type("all emails from john@company.com")
+        result, _ = query_classifier.detect_query_type("all emails from john@company.com")
         # LLM classification can vary
         assert result in ("search-by-sender", "semantic", "aggregation")
 
     def test_detect_ubereats_query(self, query_classifier):
         """Should classify 'ubereats mail' as search-by-sender (original bug report)."""
-        result = query_classifier.detect_query_type("what are my last 10 ubereats mail")
+        result, _ = query_classifier.detect_query_type("what are my last 10 ubereats mail")
         # This was the original failing query - should now be search-by-sender
         assert result in ("search-by-sender", "filtered-temporal")
 
@@ -124,7 +125,7 @@ class TestDetectQueryTypeSender:
             "recent uber mail"
         ]
         for query in test_cases:
-            result = query_classifier.detect_query_type(query)
+            result, _ = query_classifier.detect_query_type(query)
             assert result in ("search-by-sender", "filtered-temporal", "semantic"), \
                 f"Failed for: {query} (got {result})"
 
@@ -140,7 +141,7 @@ class TestDetectQueryTypeSender:
             ("linkedin notifications", ["search-by-sender", "classification", "filtered-temporal", "semantic"]),
         ]
         for query, valid_types in test_cases:
-            result = query_classifier.detect_query_type(query)
+            result, _ = query_classifier.detect_query_type(query)
             # Intent-based classification should recognize company names
             assert result in valid_types, \
                 f"Failed for: {query} (got {result}, expected one of {valid_types})"
@@ -151,13 +152,13 @@ class TestDetectQueryTypeAttachment:
 
     def test_detect_emails_with_attachments(self, query_classifier):
         """Should classify attachment queries."""
-        result = query_classifier.detect_query_type("emails with attachments")
+        result, _ = query_classifier.detect_query_type("emails with attachments")
         # LLM classification can vary
         assert result in ("search-by-attachment", "semantic")
 
     def test_detect_find_pdfs(self, query_classifier):
         """Should classify PDF attachment queries."""
-        result = query_classifier.detect_query_type("find emails with PDF attachments")
+        result, _ = query_classifier.detect_query_type("find emails with PDF attachments")
         # LLM classification can vary
         assert result in ("search-by-attachment", "semantic", "filtered-temporal")
 
@@ -167,18 +168,18 @@ class TestDetectQueryTypeClassification:
 
     def test_detect_finance_emails(self, query_classifier):
         """Should classify label-based queries as classification."""
-        result = query_classifier.detect_query_type("show me my finance emails")
+        result, _ = query_classifier.detect_query_type("show me my finance emails")
         assert result == "classification"
 
     def test_detect_work_label(self, query_classifier):
         """Should classify work label queries as classification type."""
-        result = query_classifier.detect_query_type("work emails")
+        result, _ = query_classifier.detect_query_type("work emails")
         # 'work' may or may not be detected as a classification label
         assert result in ("classification", "semantic")
 
     def test_detect_shopping_label(self, query_classifier):
         """Should classify shopping label queries as classification."""
-        result = query_classifier.detect_query_type("show me shopping emails")
+        result, _ = query_classifier.detect_query_type("show me shopping emails")
         assert result == "classification"
 
 
@@ -187,18 +188,18 @@ class TestDetectQueryTypeTemporal:
 
     def test_detect_latest_emails(self, query_classifier):
         """Should classify 'latest' queries as temporal."""
-        result = query_classifier.detect_query_type("latest messages")
+        result, _ = query_classifier.detect_query_type("latest messages")
         # LLM classification can vary between temporal types
         assert result in ("temporal", "filtered-temporal", "semantic")
 
     def test_detect_recent_emails(self, query_classifier):
         """Should classify 'recent' queries as temporal."""
-        result = query_classifier.detect_query_type("recent emails")
+        result, _ = query_classifier.detect_query_type("recent emails")
         assert result in ("temporal", "filtered-temporal", "semantic")
 
     def test_detect_newest_emails(self, query_classifier):
         """Should classify 'newest' queries as temporal."""
-        result = query_classifier.detect_query_type("newest messages")
+        result, _ = query_classifier.detect_query_type("newest messages")
         assert result in ("temporal", "filtered-temporal", "semantic")
 
 
@@ -207,18 +208,18 @@ class TestDetectQueryTypeFilteredTemporal:
 
     def test_detect_recent_uber(self, query_classifier):
         """Should classify 'recent uber' as filtered-temporal."""
-        result = query_classifier.detect_query_type("recent uber emails")
+        result, _ = query_classifier.detect_query_type("recent uber emails")
         # Should have some filtering component detected
         assert result in ("filtered-temporal", "search-by-sender", "aggregation", "semantic")
 
     def test_detect_latest_amazon_orders(self, query_classifier):
         """Should classify 'latest amazon orders' as filtered-temporal."""
-        result = query_classifier.detect_query_type("latest amazon orders")
+        result, _ = query_classifier.detect_query_type("latest amazon orders")
         assert result in ("filtered-temporal", "search-by-sender", "semantic")
 
     def test_detect_five_most_recent_uber_eats(self, query_classifier):
         """Should classify the original problem query."""
-        result = query_classifier.detect_query_type("what are the five most recent uber eats mails?")
+        result, _ = query_classifier.detect_query_type("what are the five most recent uber eats mails?")
         # This was the original problem query - should be filtered-temporal or sender
         assert result in ("filtered-temporal", "search-by-sender", "aggregation")
 
@@ -228,13 +229,13 @@ class TestDetectQueryTypeSemantic:
 
     def test_detect_about_topic(self, query_classifier):
         """Should classify general topic queries as semantic."""
-        result = query_classifier.detect_query_type("emails about budget planning")
+        result, _ = query_classifier.detect_query_type("emails about budget planning")
         # LLM classification can vary
         assert result in ("semantic", "classification", "aggregation")
 
     def test_detect_regarding_topic(self, query_classifier):
         """Should classify 'regarding' queries."""
-        result = query_classifier.detect_query_type("regarding the meeting next week")
+        result, _ = query_classifier.detect_query_type("regarding the meeting next week")
         assert result in ("semantic", "conversation", "classification")
 
 
@@ -243,56 +244,64 @@ class TestParseClassification:
 
     def test_parse_direct_type(self, query_classifier):
         """Should parse direct type names."""
-        assert query_classifier._parse_classification("conversation") == "conversation"
-        assert query_classifier._parse_classification("aggregation") == "aggregation"
-        assert query_classifier._parse_classification("semantic") == "semantic"
+        query_type, count = query_classifier._parse_classification("conversation")
+        assert query_type == "conversation"
+        assert count is None
+        
+        query_type, count = query_classifier._parse_classification("aggregation")
+        assert query_type == "aggregation"
+        assert count is None
+        
+        query_type, count = query_classifier._parse_classification("semantic")
+        assert query_type == "semantic"
+        assert count is None
 
     def test_parse_with_answer_is_prefix(self, query_classifier):
         """Should extract type from 'the answer is X' responses."""
-        result = query_classifier._parse_classification('the answer is "conversation"')
+        result, _ = query_classifier._parse_classification('the answer is "conversation"')
         assert result == "conversation"
 
     def test_parse_with_sure_prefix(self, query_classifier):
         """Should extract type from verbose responses."""
-        result = query_classifier._parse_classification('sure, the answer is "aggregation"')
+        result, _ = query_classifier._parse_classification('sure, the answer is "aggregation"')
         assert result == "aggregation"
 
     def test_parse_recent_maps_to_filtered_temporal(self, query_classifier):
         """Should map 'recent' to filtered-temporal."""
-        result = query_classifier._parse_classification("recent")
+        result, _ = query_classifier._parse_classification("recent")
         assert result == "filtered-temporal"
 
     def test_parse_latest_maps_to_filtered_temporal(self, query_classifier):
         """Should map 'latest' to filtered-temporal."""
-        result = query_classifier._parse_classification("latest")
+        result, _ = query_classifier._parse_classification("latest")
         assert result == "filtered-temporal"
 
     def test_parse_count_maps_to_aggregation(self, query_classifier):
         """Should map 'count' to aggregation."""
-        result = query_classifier._parse_classification("count")
+        result, _ = query_classifier._parse_classification("count")
         assert result == "aggregation"
 
     def test_parse_with_underscore_normalization(self, query_classifier):
         """Should normalize underscores to hyphens."""
-        result = query_classifier._parse_classification("filtered_temporal")
+        result, _ = query_classifier._parse_classification("filtered_temporal")
         assert result == "filtered-temporal"
 
     def test_parse_unknown_defaults_to_semantic(self, query_classifier):
         """Should default to semantic for unknown types."""
-        result = query_classifier._parse_classification("unknown_type_xyz")
+        result, _ = query_classifier._parse_classification("unknown_type_xyz")
         assert result == "semantic"
 
     def test_parse_empty_string(self, query_classifier):
         """Should handle empty string gracefully."""
-        result = query_classifier._parse_classification("")
+        result, _ = query_classifier._parse_classification("")
         assert result == "semantic"
 
     def test_parse_strips_punctuation(self, query_classifier):
         """Should strip punctuation from response."""
-        result = query_classifier._parse_classification("conversation.")
+        result, _ = query_classifier._parse_classification("conversation.")
         assert result == "conversation"
         
-        result = query_classifier._parse_classification("aggregation,")
+        result, _ = query_classifier._parse_classification("aggregation,")
         assert result == "aggregation"
 
 
@@ -301,37 +310,37 @@ class TestFallbackClassification:
 
     def test_fallback_hello(self, query_classifier):
         """Should classify hello as conversation."""
-        result = query_classifier._fallback_classification("hello there")
+        result, _ = query_classifier._fallback_classification("hello there")
         assert result == "conversation"
 
     def test_fallback_thanks(self, query_classifier):
         """Should classify thanks as conversation."""
-        result = query_classifier._fallback_classification("thank you very much")
+        result, _ = query_classifier._fallback_classification("thank you very much")
         assert result == "conversation"
 
     def test_fallback_how_many(self, query_classifier):
         """Should classify 'how many' as aggregation."""
-        result = query_classifier._fallback_classification("how many uber emails")
+        result, _ = query_classifier._fallback_classification("how many uber emails")
         assert result == "aggregation"
 
     def test_fallback_count(self, query_classifier):
         """Should classify 'count' as aggregation."""
-        result = query_classifier._fallback_classification("count my emails")
+        result, _ = query_classifier._fallback_classification("count my emails")
         assert result == "aggregation"
 
     def test_fallback_recent_with_topic(self, query_classifier):
         """Should classify 'recent [topic]' as filtered-temporal."""
-        result = query_classifier._fallback_classification("recent uber emails")
+        result, _ = query_classifier._fallback_classification("recent uber emails")
         assert result == "filtered-temporal"
 
     def test_fallback_latest_with_topic(self, query_classifier):
         """Should classify 'latest [topic]' as filtered-temporal."""
-        result = query_classifier._fallback_classification("latest amazon orders")
+        result, _ = query_classifier._fallback_classification("latest amazon orders")
         assert result == "filtered-temporal"
 
     def test_fallback_recent_alone(self, query_classifier):
         """Should classify 'recent' alone as temporal."""
-        result = query_classifier._fallback_classification("recent emails")
+        result, _ = query_classifier._fallback_classification("recent emails")
         # 'emails' alone doesn't have content filter, but 'recent' without specific topic
         # fallback logic checks for both temporal AND content filter
         # Since 'emails' is common, it should be temporal
@@ -339,7 +348,7 @@ class TestFallbackClassification:
 
     def test_fallback_default_semantic(self, query_classifier):
         """Should default to semantic for unrecognized patterns."""
-        result = query_classifier._fallback_classification("what did john say about the project")
+        result, _ = query_classifier._fallback_classification("what did john say about the project")
         assert result == "semantic"
 
 
@@ -348,40 +357,40 @@ class TestEdgeCases:
 
     def test_mixed_case(self, query_classifier):
         """Should handle mixed case queries."""
-        result = query_classifier.detect_query_type("HELLO")
+        result, _ = query_classifier.detect_query_type("HELLO")
         assert result == "conversation"
         
-        result = query_classifier.detect_query_type("How Many Emails")
+        result, _ = query_classifier.detect_query_type("How Many Emails")
         assert result in ("aggregation", "semantic")
 
     def test_with_punctuation(self, query_classifier):
         """Should handle queries with punctuation."""
-        result = query_classifier.detect_query_type("hello!")
+        result, _ = query_classifier.detect_query_type("hello!")
         assert result == "conversation"
         
-        result = query_classifier.detect_query_type("how many emails?")
+        result, _ = query_classifier.detect_query_type("how many emails?")
         assert result in ("aggregation", "semantic")
 
     def test_empty_query(self, query_classifier):
         """Should handle empty queries gracefully."""
-        result = query_classifier.detect_query_type("")
+        result, _ = query_classifier.detect_query_type("")
         # Should return some valid type
         assert result in query_classifier.VALID_TYPES
 
     def test_whitespace_only(self, query_classifier):
         """Should handle whitespace-only queries."""
-        result = query_classifier.detect_query_type("   ")
+        result, _ = query_classifier.detect_query_type("   ")
         assert result in query_classifier.VALID_TYPES
 
     def test_very_long_query(self, query_classifier):
         """Should handle very long queries."""
         long_query = "show me all the emails " * 50
-        result = query_classifier.detect_query_type(long_query)
+        result, _ = query_classifier.detect_query_type(long_query)
         assert result in query_classifier.VALID_TYPES
 
     def test_special_characters(self, query_classifier):
         """Should handle queries with special characters."""
-        result = query_classifier.detect_query_type("emails from test@example.com")
+        result, _ = query_classifier.detect_query_type("emails from test@example.com")
         assert result in query_classifier.VALID_TYPES
 
 
@@ -390,25 +399,25 @@ class TestIntentBasedClassification:
 
     def test_contextual_aggregation_intent(self, query_classifier):
         """Contextual query 'of those, how many' should be aggregation (intent: count)."""
-        result = query_classifier.detect_query_type("of those, how many are from work")
+        result, _ = query_classifier.detect_query_type("of those, how many are from work")
         # Intent is COUNT/aggregation, not semantic search
         assert result in ["aggregation", "semantic"]
 
     def test_contextual_classification_intent(self, query_classifier):
         """Contextual query 'of those, which are spam' should be classification (intent: categorize)."""
-        result = query_classifier.detect_query_type("of those, which are spam")
+        result, _ = query_classifier.detect_query_type("of those, which are spam")
         # Intent is CATEGORIZE/classification, not semantic
         assert result in ["classification", "semantic"]
 
     def test_contextual_classification_receipts(self, query_classifier):
         """Contextual query 'from them, show receipts' should be classification (intent: filter by type)."""
-        result = query_classifier.detect_query_type("from them, show me receipts")
+        result, _ = query_classifier.detect_query_type("from them, show me receipts")
         # Intent is FILTER/classification, not search-by-sender
         assert result in ["classification", "semantic"]
 
     def test_contextual_without_pronoun_classification(self, query_classifier):
         """Query 'which are interviews' should be classification regardless of context."""
-        result = query_classifier.detect_query_type("which are interviews")
+        result, _ = query_classifier.detect_query_type("which are interviews")
         # Intent is CATEGORIZE/classification
         assert result in ["classification", "semantic"]
 
@@ -429,7 +438,7 @@ class TestQueryClassifierIntegration:
         ]
         
         for query, valid_types in queries_and_valid_types:
-            result = query_classifier.detect_query_type(query)
+            result, _ = query_classifier.detect_query_type(query)
             # Use VALID_TYPES as fallback if specific assertion fails with rules provider
             assert result in valid_types or result in query_classifier.VALID_TYPES, \
                 f"Query '{query}' got {result}, expected one of {valid_types}"
@@ -443,6 +452,66 @@ class TestQueryClassifierIntegration:
         ]
         
         for query in test_queries:
-            result = query_classifier.detect_query_type(query)
+            result, _ = query_classifier.detect_query_type(query)
             assert result in query_classifier.VALID_TYPES, \
                 f"Query '{query[:50]}' returned invalid type: {result}"
+
+
+class TestListPreviousResultsDetection:
+    """Tests for list-previous-results query type detection."""
+
+    def test_list_those_with_history(self, query_classifier):
+        """Should detect 'list those' as list-previous-results with chat history."""
+        chat_history = [
+            {"role": "user", "content": "how many python emails do I have"},
+            {"role": "assistant", "content": "You have 78 emails related to python."}
+        ]
+        result, _ = query_classifier.detect_query_type("list those", chat_history)
+        assert result == "list-previous-results"
+
+    def test_show_them_with_history(self, query_classifier):
+        """Should detect 'show them' as list-previous-results with chat history."""
+        chat_history = [
+            {"role": "user", "content": "count my uber emails"},
+            {"role": "assistant", "content": "You have 42 uber emails."}
+        ]
+        result, _ = query_classifier.detect_query_type("show them to me", chat_history)
+        assert result == "list-previous-results"
+
+    def test_list_those_78_emails(self, query_classifier):
+        """Should detect 'list those 78 emails' as list-previous-results."""
+        chat_history = [
+            {"role": "user", "content": "how many python emails"},
+            {"role": "assistant", "content": "You have 78 emails."}
+        ]
+        result, _ = query_classifier.detect_query_type("list those 78 emails", chat_history)
+        assert result == "list-previous-results"
+
+    def test_no_detection_without_history(self, query_classifier):
+        """Should NOT detect list-previous-results without chat history."""
+        # Without history, "list those" doesn't make sense as a follow-up
+        result, _ = query_classifier.detect_query_type("list those", None)
+        assert result != "list-previous-results"
+
+    def test_no_detection_with_empty_history(self, query_classifier):
+        """Should NOT detect list-previous-results with empty chat history."""
+        result, _ = query_classifier.detect_query_type("list those", [])
+        assert result != "list-previous-results"
+
+    def test_what_are_they(self, query_classifier):
+        """Should detect 'what are they' as list-previous-results."""
+        chat_history = [
+            {"role": "user", "content": "count finance emails"},
+            {"role": "assistant", "content": "You have 50 finance emails."}
+        ]
+        result, _ = query_classifier.detect_query_type("what are they", chat_history)
+        assert result == "list-previous-results"
+
+    def test_display_those(self, query_classifier):
+        """Should detect 'display those' as list-previous-results."""
+        chat_history = [
+            {"role": "user", "content": "how many uber emails"},
+            {"role": "assistant", "content": "You have 25 uber emails."}
+        ]
+        result, _ = query_classifier.detect_query_type("display those", chat_history)
+        assert result == "list-previous-results"

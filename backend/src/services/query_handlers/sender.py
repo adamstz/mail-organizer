@@ -1,10 +1,10 @@
 """Handler for search-by-sender queries."""
 from typing import Dict, Optional
 import logging
-import re
 
 from .base import QueryHandler
 from ..prompt_templates import SEARCH_BY_SENDER_PROMPT, SENDER_EXTRACTION_PROMPT
+from ...utils.query_utils import extract_number_from_query
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class SenderHandler(QueryHandler):
     """Handle search queries for emails from a specific sender."""
 
-    def handle(self, question: str, limit: int = 5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 10, chat_history: Optional[list] = None) -> Dict:
         """Handle a search-by-sender query.
 
         Args:
@@ -26,7 +26,7 @@ class SenderHandler(QueryHandler):
         logger.info(f"[SEARCH BY SENDER] Processing sender search (model: {self.llm.provider}/{self.llm.model})")
 
         # Extract number from query if specified (e.g., "last 10", "show 20")
-        requested_limit = self._extract_number_from_query(question)
+        requested_limit = extract_number_from_query(question, default=None)
         if requested_limit:
             limit = requested_limit
             logger.info(f"[SEARCH BY SENDER] Extracted limit from query: {limit}")
@@ -80,7 +80,7 @@ class SenderHandler(QueryHandler):
         """
         logger.info("[SENDER HANDLER] ========== Extracting Sender ==========")
         logger.info("[SENDER HANDLER] Question: '%s'", question)
-        
+
         # If there's chat history, include it for pronoun resolution
         history_context = self._format_chat_history(chat_history) if chat_history else ""
         if history_context:
@@ -88,7 +88,7 @@ class SenderHandler(QueryHandler):
 
         prompt = SENDER_EXTRACTION_PROMPT.format(question=question) + history_context
         logger.info("[SENDER HANDLER] Extraction prompt:\n%s", prompt)
-        
+
         response = self._call_llm_simple(prompt).strip()
         logger.info("[SENDER HANDLER] Raw LLM response: '%s'", response)
 
@@ -120,29 +120,3 @@ class SenderHandler(QueryHandler):
             question=question,
         ) + history_context
         return self._call_llm(prompt)
-
-    def _extract_number_from_query(self, question: str) -> Optional[int]:
-        """Extract number from query like 'last 10 emails' or 'show 20 messages'.
-
-        Args:
-            question: User's question
-
-        Returns:
-            Extracted number or None if not found
-        """
-        # Look for patterns like "last N", "show N", "N emails", "N messages"
-        patterns = [
-            r'\b(?:last|recent|latest)\s+(\d+)\b',
-            r'\b(?:show|get|find)\s+(?:me\s+)?(\d+)\b',
-            r'\b(\d+)\s+(?:emails?|messages?|mails?)\b',
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, question, re.IGNORECASE)
-            if match:
-                num = int(match.group(1))
-                # Sanity check: limit to reasonable range
-                if 1 <= num <= 100:
-                    return num
-
-        return None

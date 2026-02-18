@@ -8,6 +8,7 @@ from ..llm_processor import LLMProcessor
 from ..embedding_service import EmbeddingService
 from ...storage.storage_interface import StorageBackend
 from ...models.message import MailMessage
+from ...models.query_response import QueryResponse, MAX_CACHED_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class QueryHandler(ABC):
         self.embedder = embedder
 
     @abstractmethod
-    def handle(self, question: str, limit: int = 5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 10, chat_history: Optional[list] = None) -> Dict:
         """Handle a query and return a response.
 
         Args:
@@ -65,9 +66,10 @@ class QueryHandler(ABC):
         question: str,
         query_type: str,
         confidence: str = 'high',
-        **extra
+        total_count: Optional[int] = None,
+        cached_message_ids: Optional[List[str]] = None,
     ) -> Dict:
-        """Build a standardized response dict.
+        """Build a standardized response dict using QueryResponse model.
 
         Args:
             answer: The generated answer
@@ -75,20 +77,26 @@ class QueryHandler(ABC):
             question: Original question
             query_type: Type of query
             confidence: Confidence level
-            **extra: Additional fields to include
+            total_count: Optional total count for aggregation queries
+            cached_message_ids: Optional list of message IDs for caching (max 500)
 
         Returns:
-            Standardized response dict
+            Standardized response dict (QueryResponse.model_dump())
         """
-        response = {
-            'answer': answer,
-            'sources': sources,
-            'question': question,
-            'confidence': confidence,
-            'query_type': query_type,
-        }
-        response.update(extra)
-        return response
+        # Cap cached message IDs at MAX_CACHED_IDS
+        if cached_message_ids and len(cached_message_ids) > MAX_CACHED_IDS:
+            cached_message_ids = cached_message_ids[:MAX_CACHED_IDS]
+
+        response = QueryResponse(
+            answer=answer,
+            sources=sources,
+            question=question,
+            confidence=confidence,
+            query_type=query_type,
+            total_count=total_count,
+            cached_message_ids=cached_message_ids,
+        )
+        return response.model_dump()
 
     def _format_chat_history(self, chat_history: Optional[list] = None) -> str:
         """Format chat history for inclusion in prompts.

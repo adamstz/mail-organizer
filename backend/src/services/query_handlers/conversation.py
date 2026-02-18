@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class ConversationHandler(QueryHandler):
     """Handle conversational queries like greetings and help requests."""
 
-    def handle(self, question: str, limit: int = 5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 10, chat_history: Optional[list] = None) -> Dict:
         """Handle a conversational query.
 
         Args:

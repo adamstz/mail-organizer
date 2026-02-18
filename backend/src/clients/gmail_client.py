@@ -6,7 +6,10 @@ once a Pub/Sub notification arrives.
 """
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence, Set
+import os
+import logging
+from typing import Iterable, List, Optional, Sequence, Set
+from datetime import datetime, timezone
 
 import google.auth
 from google.auth.credentials import Credentials
@@ -14,12 +17,13 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import Resource, build
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_GMAIL_SCOPES: Sequence[str] = (
     # Read-only access will not let us modify labels or ack history. We default
-    # to readonly so downstream code won't attempt to modify messages unless
-    # explicitly changed. Use gmail.modify only when you need to change labels
-    # or state.
-    "https://www.googleapis.com/auth/gmail.readonly",
+    # to modify to support trashing messages. Use gmail.readonly only when you
+    # explicitly don't need to modify messages.
+    "https://www.googleapis.com/auth/gmail.modify",
 )
 
 
@@ -44,25 +48,138 @@ def build_credentials_from_oauth(
     )
 
 
+def build_credentials_from_db(email: Optional[str] = None) -> Optional[OAuthCredentials]:
+    """Build OAuth2 credentials from tokens stored in the database.
+
+    This is the preferred method for self-hosted deployments using the OAuth flow.
+    Falls back to environment variables if no tokens are found in the database.
+
+    Args:
+        email: Specific email to get tokens for. If None, gets the first authenticated user.
+
+    Returns:
+        OAuthCredentials if tokens found, None otherwise
+    """
+    # Import here to avoid circular imports
+    from .. import storage
+
+    # Get OAuth config from environment (needed for client_id/secret)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        logger.warning("GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set")
+        return None
+
+    # Try to get tokens from database
+    try:
+        if email:
+            tokens = storage.get_oauth_tokens(email)
+        else:
+            # Get the first/only authenticated user for single-user deployments
+            authenticated_email = storage.get_authenticated_email()
+            if not authenticated_email:
+                logger.debug("No authenticated user found in database")
+                return None
+            tokens = storage.get_oauth_tokens(authenticated_email)
+
+        if not tokens:
+            logger.debug(f"No OAuth tokens found for email: {email or 'any'}")
+            return None
+
+        logger.debug(f"Building credentials from database for: {tokens['email']}")
+
+        return OAuthCredentials(
+            token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=list(DEFAULT_GMAIL_SCOPES),
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting tokens from database: {e}")
+        return None
+
+
+def get_gmail_credentials(email: Optional[str] = None) -> Optional[Credentials]:
+    """Get Gmail credentials using the best available method.
+
+    Priority:
+    1. Database-stored OAuth tokens (from OAuth flow)
+    2. Environment variable credentials (GOOGLE_REFRESH legacy method)
+    3. Application Default Credentials (for service accounts)
+
+    Args:
+        email: Specific email to get tokens for (optional)
+
+    Returns:
+        Credentials object if available, None otherwise
+    """
+    # Try database first (OAuth flow)
+    creds = build_credentials_from_db(email)
+    if creds:
+        logger.debug("Using credentials from database")
+        return creds
+
+    # Fall back to environment variables (legacy method)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    refresh_token = os.environ.get("GOOGLE_REFRESH")
+
+    if client_id and client_secret and refresh_token:
+        logger.debug("Using credentials from environment variables (legacy)")
+        return build_credentials_from_oauth(client_id, client_secret, refresh_token)
+
+    # Fall back to Application Default Credentials
+    try:
+        logger.debug("Attempting Application Default Credentials")
+        creds, _ = google.auth.default(scopes=list(DEFAULT_GMAIL_SCOPES))
+        return creds
+    except Exception as e:
+        logger.debug(f"ADC not available: {e}")
+
+    return None
+
+
 def build_gmail_service(
     credentials: Credentials | None = None,
     scopes: Iterable[str] = DEFAULT_GMAIL_SCOPES,
     *,
     cache_discovery: bool = False,
     user_agent: str | None = None,
+    email: str | None = None,
 ) -> Resource:
     """Return an authenticated Gmail API client (`googleapiclient.discovery.Resource`).
 
-    If `credentials` is omitted the function falls back to Google Application
-    Default Credentials, which means it respects `GOOGLE_APPLICATION_CREDENTIALS`
-    keys, `gcloud auth application-default login`, or the identity injected into
-    a managed runtime. The helper also refreshes expiring credentials.
+    If `credentials` is omitted, the function tries multiple credential sources:
+    1. Database-stored OAuth tokens (from OAuth flow)
+    2. Environment variable credentials (GOOGLE_REFRESH legacy method)
+    3. Application Default Credentials
+
+    The helper also refreshes expiring credentials and updates the database
+    with new access tokens if using database-stored credentials.
+
+    Args:
+        credentials: Optional pre-built credentials
+        scopes: OAuth scopes to request
+        cache_discovery: Whether to cache API discovery document
+        user_agent: Optional user agent string
+        email: Email address to get credentials for (when using database tokens)
     """
     scopes_list = list(scopes)
 
     if credentials is None:
-        scoped = scopes_list or None
-        credentials, _ = google.auth.default(scopes=scoped)
+        credentials = get_gmail_credentials(email)
+
+        if credentials is None:
+            raise ValueError(
+                "No Gmail credentials available. Either:\n"
+                "1. Complete the OAuth flow at /api/auth/login\n"
+                "2. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH env vars\n"
+                "3. Configure Application Default Credentials"
+            )
 
     requires_scopes = getattr(credentials, "requires_scopes", False)
     if requires_scopes and scopes_list:
@@ -71,6 +188,27 @@ def build_gmail_service(
     if not credentials.valid:
         request = Request()
         credentials.refresh(request)
+
+        # If using OAuth credentials, update the access token in database
+        if isinstance(credentials, OAuthCredentials) and credentials.token:
+            try:
+                from .. import storage
+                # Get the email associated with these credentials
+                # For OAuthCredentials built from DB, we can track which user
+                authenticated_email = storage.get_authenticated_email()
+                if authenticated_email:
+                    # Calculate new expiry (Google access tokens typically last 1 hour)
+                    new_expiry = datetime.now(timezone.utc).replace(
+                        hour=datetime.now(timezone.utc).hour + 1
+                    )
+                    storage.update_access_token(
+                        authenticated_email,
+                        credentials.token,
+                        new_expiry
+                    )
+                    logger.debug(f"Updated access token in database for {authenticated_email}")
+            except Exception as e:
+                logger.warning(f"Failed to update access token in database: {e}")
 
     discovery_kwargs = {"cache_discovery": cache_discovery}
     if user_agent:
@@ -158,4 +296,58 @@ def register_watch(
     if label_ids:
         body["labelIds"] = label_ids
     return gmail_service.users().watch(userId=user_id, body=body).execute()
+
+
+def trash_message(
+    gmail_service: Resource,
+    message_id: str,
+    *,
+    user_id: str = "me",
+) -> dict:
+    """Move a message to the trash.
+
+    The message can be recovered from the trash within 30 days.
+
+    Args:
+        gmail_service: Authenticated Gmail API client
+        message_id: The ID of the message to trash
+        user_id: The user's email address or 'me' for authenticated user
+
+    Returns:
+        The API response containing the trashed message metadata
+    """
+    messages_resource = gmail_service.users().messages()
+    return messages_resource.trash(userId=user_id, id=message_id).execute()
+
+
+def batch_trash_messages(
+    gmail_service: Resource,
+    message_ids: List[str],
+    *,
+    user_id: str = "me",
+) -> dict:
+    """Move multiple messages to the trash using batch modification.
+
+    Uses Gmail's batchModify API to efficiently trash multiple messages
+    in a single request.
+
+    Args:
+        gmail_service: Authenticated Gmail API client
+        message_ids: List of message IDs to trash
+        user_id: The user's email address or 'me' for authenticated user
+
+    Returns:
+        Empty dict on success (batchModify returns no content)
+    """
+    if not message_ids:
+        return {}
+
+    messages_resource = gmail_service.users().messages()
+    body = {
+        "ids": message_ids,
+        "addLabelIds": ["TRASH"],
+        "removeLabelIds": ["INBOX"],
+    }
+    messages_resource.batchModify(userId=user_id, body=body).execute()
+    return {"trashed": len(message_ids)}
 

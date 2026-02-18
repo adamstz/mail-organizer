@@ -34,15 +34,15 @@ class SemanticHandler(QueryHandler):
         self,
         question: str,
         results: List[Tuple],
-        top_k: int = 5
+        top_k: int = 10
     ) -> List[Tuple]:
         """Rerank retrieval results using cross-encoder for better relevance.
-        
+
         Args:
             question: User's query
             results: List of (message, score) tuples from initial retrieval
             top_k: Number of top results to return after reranking
-            
+
         Returns:
             Reranked list of (message, new_score) tuples
         """
@@ -50,7 +50,7 @@ class SemanticHandler(QueryHandler):
         if cross_encoder is None or len(results) <= 1:
             # No reranking available or not enough results
             return results[:top_k]
-        
+
         try:
             # Prepare query-document pairs for cross-encoder
             pairs = []
@@ -58,30 +58,30 @@ class SemanticHandler(QueryHandler):
                 # Create searchable text from message
                 doc_text = f"{message.subject or ''} {message.snippet or ''}"
                 pairs.append([question, doc_text])
-            
+
             # Get cross-encoder scores
             scores = cross_encoder.predict(pairs)
-            
+
             # Combine with original results and sort by cross-encoder score
             reranked = [
                 (message, float(score))
                 for (message, _), score in zip(results, scores)
             ]
             reranked.sort(key=lambda x: x[1], reverse=True)
-            
+
             logger.debug(f"[SEMANTIC] Reranked {len(results)} results to top {top_k}")
             return reranked[:top_k]
-            
+
         except Exception as e:
             logger.warning(f"[SEMANTIC] Reranking failed: {e}. Using original results.")
             return results[:top_k]
 
-    def handle(self, question: str, limit: int = 5, threshold: float = 0.5, chat_history: Optional[list] = None) -> Dict:
+    def handle(self, question: str, limit: int = 20, threshold: float = 0.5, chat_history: Optional[list] = None) -> Dict:
         """Handle a semantic search query with hybrid search and reranking.
 
         Args:
             question: User's question
-            limit: Final number of emails to return (after reranking)
+            limit: Final number of emails to return (after reranking, default 20)
             threshold: Minimum similarity threshold
             chat_history: Optional list of previous messages for context
 
@@ -137,8 +137,8 @@ class SemanticHandler(QueryHandler):
                     query_text=question,
                     limit=limit,  # Final limit after fusion
                     retrieval_k=retrieval_k,  # Initial retrieval from each method
-                    vector_weight=0.6,  # Slightly favor semantic search
-                    keyword_weight=0.4
+                    vector_weight=0.5,  # Equal weight for balanced results
+                    keyword_weight=0.5  # Improved exact keyword matching
                 )
                 logger.debug("[SEMANTIC QUERY] Hybrid search returned %d results", len(similar_emails))
             else:
@@ -152,7 +152,7 @@ class SemanticHandler(QueryHandler):
                 # Rerank the vector results
                 similar_emails = self._rerank_results(question, similar_emails, top_k=limit)
                 logger.debug("[SEMANTIC QUERY] Vector search + rerank returned %d results", len(similar_emails))
-                
+
         except Exception as e:
             logger.debug("[SEMANTIC QUERY] Search failed: %s", e)
             return self._build_response(
@@ -222,6 +222,9 @@ class SemanticHandler(QueryHandler):
             for msg, score in similar_emails
         ]
 
+        # Extract message IDs for caching (enables "list those" follow-ups)
+        cached_message_ids = [msg.id for msg, _ in similar_emails]
+
         # Determine confidence based on top similarity score
         top_score = similar_emails[0][1]
         if top_score > 0.8:
@@ -239,6 +242,7 @@ class SemanticHandler(QueryHandler):
             question=question,
             query_type='semantic',
             confidence=confidence,
+            cached_message_ids=cached_message_ids,
         )
 
     def _generate_answer(self, question: str, context: str, chat_history: Optional[list] = None) -> str:

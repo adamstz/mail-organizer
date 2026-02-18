@@ -1,16 +1,18 @@
-.PHONY: help test test-all test-unit test-smoke test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox pull-inbox-repull run
+.PHONY: help test test-all test-unit test-smoke test-fast test-integration test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox pull-inbox-repull run
 
 # Python virtual environment
-VENV_PATH = ../.venv
+VENV_PATH = ./.venv
 PYTHON = $(VENV_PATH)/bin/python
 PYTEST = $(PYTHON) -m pytest
 
 # Default target
 help:
 	@echo "Available test commands:"
-	@echo "  make test           - Run all tests (default)"
+	@echo "  make test           - Run all tests (default, excludes slow)"
 	@echo "  make test-all       - Run all tests with verbose output"
+	@echo "  make test-fast      - Run unit tests only, skip integration and slow"
 	@echo "  make test-unit      - Run unit tests only"
+	@echo "  make test-integration - Run integration tests only"
 	@echo "  make test-smoke     - Run smoke tests only"
 	@echo "  make test-llm       - Run LLM processor tests only"
 	@echo "  make test-storage   - Run storage tests only"
@@ -40,9 +42,17 @@ test: lint
 test-all:
 	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -vv --tb=short
 
-# Run only unit tests (excludes smoke)
+# Run only unit tests (excludes integration, smoke, and other)
 test-unit:
-	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/ -v --ignore=tests/smoke/
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/unit/ -v
+
+# Run fast tests only (unit tests, no integration or slow)
+test-fast:
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/unit/ -v -m "not slow"
+
+# Run integration tests only (requires PostgreSQL)
+test-integration:
+	LLM_PROVIDER=rules PYTHONPATH=. $(PYTEST) tests/integration/ -v
 
 # Run smoke tests only
 test-smoke:

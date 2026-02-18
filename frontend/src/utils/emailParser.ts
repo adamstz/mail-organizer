@@ -292,9 +292,16 @@ export const parseBackendMessage = (m: Record<string, unknown>): Email | null =>
       if (p === 'high') displayPriority = 'High';
       else if (p === 'medium' || p === 'normal') displayPriority = 'Normal';
       else if (p === 'low') displayPriority = 'Low';
-    } return {
+    }
+
+    // Extract sender (from) field
+    const rawFrom = m.from ?? m['from'] ?? '';
+    const displayFrom = sanitizeText(String(rawFrom));
+
+    return {
       id: String(m.id),
       subject: sanitizeText(String(rawSubject)),
+      from: displayFrom,
       date: displayDate,
       priority: displayPriority,
       summary: sanitizeText(summary ? String(summary) : String(rawSummary)),

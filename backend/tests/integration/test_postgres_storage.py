@@ -725,8 +725,9 @@ class TestPostgresStorageMetadataOperations:
         assert storage.get_history_id() == special_id
 
 
+@pytest.mark.slow
 class TestPostgresStorageLargePayloads:
-    """Tests for handling large message payloads."""
+    """Tests for handling large message payloads (2MB, 5MB payloads - marked slow)."""
     
     def _make_large_payload(self, size_mb: float = 2.0) -> dict:
         """Generate a large payload of approximately size_mb megabytes."""

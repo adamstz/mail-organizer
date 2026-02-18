@@ -25,13 +25,27 @@ def test_can_import_core_modules():
 
 def test_api_starts():
     """Verify API can start and respond to requests."""
+    import os
+    os.environ.setdefault("JWT_SECRET", "test_secret_key_for_smoke_tests")
+    os.environ.setdefault("GOOGLE_CLIENT_ID", "test_client_id")
+    os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test_client_secret")
+
     from src.api import app
     from src.storage import storage
+    from src.auth.middleware import create_jwt_token, JWT_COOKIE_NAME
 
     # Initialize database first
     storage.init_db()
 
     client = TestClient(app)
+
+    # Test public endpoint (health check)
+    response = client.get("/health")
+    assert response.status_code == 200
+
+    # Test protected endpoint with auth
+    token = create_jwt_token("testuser@gmail.com")
+    client.cookies.set(JWT_COOKIE_NAME, token)
     response = client.get("/messages")
     assert response.status_code == 200
 

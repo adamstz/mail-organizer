@@ -53,10 +53,19 @@ class SyncProgress:
 class SyncManager:
     """Manages synchronization operations"""
 
+    # Cache duration for Gmail sync counts (in seconds)
+    GMAIL_CACHE_TTL = 60  # Only check Gmail every 60 seconds
+
     def __init__(self):
         self.pull_progress = SyncProgress("pull")
         self.classify_progress = SyncProgress("classify")
         self._lock = threading.Lock()
+        # Cache for Gmail sync counts to avoid repeated API calls
+        self._gmail_cache: Dict[str, Any] = {
+            "gmail_total": None,
+            "not_synced": 0,
+            "last_updated": None,
+        }
 
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status including counts and progress"""
@@ -70,9 +79,8 @@ class SyncManager:
             # Get unembedded count
             unembedded_count = self._get_unembedded_count()
 
-            # Get Gmail INBOX count
-            gmail_total = self._get_gmail_inbox_count()
-            not_synced = max(0, gmail_total - db_total) if gmail_total is not None else 0
+            # Get Gmail INBOX count and calculate actual messages not synced
+            gmail_total, not_synced = self._get_gmail_sync_counts(set(all_message_ids))
 
             return {
                 "gmail_total": gmail_total,
@@ -96,32 +104,81 @@ class SyncManager:
                 "classify_progress": self.classify_progress.to_dict()
             }
 
-    def _get_gmail_inbox_count(self) -> Optional[int]:
-        """Get total count of messages in Gmail INBOX"""
+    def _get_gmail_sync_counts(self, existing_ids: set) -> tuple[Optional[int], int]:
+        """Get Gmail INBOX count and calculate how many messages need syncing.
+
+        Uses caching to avoid repeated Gmail API calls. Cache is invalidated
+        after GMAIL_CACHE_TTL seconds or when a pull operation completes.
+
+        Args:
+            existing_ids: Set of message IDs already in the database
+
+        Returns:
+            Tuple of (total_gmail_count, not_synced_count)
+        """
+        # Check if we have a valid cached result
+        now = datetime.now(timezone.utc)
+        if self._gmail_cache["last_updated"] is not None:
+            cache_age = (now - self._gmail_cache["last_updated"]).total_seconds()
+            if cache_age < self.GMAIL_CACHE_TTL:
+                logger.debug(f"Using cached Gmail sync counts (age: {cache_age:.1f}s)")
+                return self._gmail_cache["gmail_total"], self._gmail_cache["not_synced"]
         try:
+            # Get authenticated user's email and tokens from database
+            email = storage.get_authenticated_email()
+            if not email:
+                logger.debug("No authenticated user found")
+                return None, 0
+
+            tokens = storage.get_oauth_tokens(email)
+            if not tokens:
+                logger.debug(f"No OAuth tokens found for user: {email}")
+                return None, 0
+
             client_id = os.environ.get("GOOGLE_CLIENT_ID")
             client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-            refresh_token = os.environ.get("GOOGLE_REFRESH")
 
-            if not all([client_id, client_secret, refresh_token]):
-                return None
+            if not all([client_id, client_secret]):
+                logger.warning("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables not set")
+                return None, 0
 
+            # Build credentials from database tokens
+            refresh_token = tokens.get("refresh_token")
             creds = build_credentials_from_oauth(client_id, client_secret, refresh_token)
             service = build_gmail_service(credentials=creds)
 
-            # Get message count from INBOX label
-            result = service.users().messages().list(
-                userId="me",
-                labelIds=["INBOX"],
-                maxResults=1
-            ).execute()
+            # List all message IDs from INBOX (just IDs, not full messages)
+            logger.info("Fetching Gmail INBOX message IDs for sync status (cache miss)")
+            gmail_ids = []
+            messages_resource = service.users().messages()
+            request = messages_resource.list(userId="me", labelIds=["INBOX"], maxResults=500)
 
-            # The resultSizeEstimate gives us the total count
-            return result.get("resultSizeEstimate", 0)
+            while request is not None:
+                resp = request.execute()
+                for m in resp.get("messages", []):
+                    mid = m.get("id")
+                    if mid:
+                        gmail_ids.append(mid)
+                request = messages_resource.list_next(request, resp)
+
+            total_count = len(gmail_ids)
+
+            # Count how many are NOT in our database
+            missing_ids = [mid for mid in gmail_ids if mid not in existing_ids]
+            not_synced_count = len(missing_ids)
+
+            logger.debug(f"Gmail sync status: {total_count} total, {not_synced_count} not synced")
+
+            # Cache the results
+            self._gmail_cache["gmail_total"] = total_count
+            self._gmail_cache["not_synced"] = not_synced_count
+            self._gmail_cache["last_updated"] = datetime.now(timezone.utc)
+
+            return total_count, not_synced_count
 
         except Exception as e:
             logger.debug(f"Gmail not available: {e}")
-            return None
+            return None, 0
 
     def _get_unembedded_count(self) -> int:
         """Get count of messages without embeddings"""
@@ -170,14 +227,24 @@ class SyncManager:
         try:
             logger.info("Starting Gmail pull operation")
 
-            # Get Gmail credentials
+            # Get authenticated user's email and tokens from database
+            email = storage.get_authenticated_email()
+            if not email:
+                raise Exception("No authenticated user found. Please log in first.")
+
+            tokens = storage.get_oauth_tokens(email)
+            if not tokens:
+                raise Exception(f"No OAuth tokens found for user: {email}. Please log in again.")
+
+            # Get client credentials from environment
             client_id = os.environ.get("GOOGLE_CLIENT_ID")
             client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-            refresh_token = os.environ.get("GOOGLE_REFRESH")
 
-            if not all([client_id, client_secret, refresh_token]):
-                raise Exception("Gmail credentials not configured")
+            if not all([client_id, client_secret]):
+                raise Exception("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables not set")
 
+            # Build credentials from database tokens
+            refresh_token = tokens.get("refresh_token")
             creds = build_credentials_from_oauth(client_id, client_secret, refresh_token)
             service = build_gmail_service(credentials=creds)
 
@@ -232,6 +299,8 @@ class SyncManager:
 
             self.pull_progress.status = "completed"
             self.pull_progress.completed_at = datetime.now(timezone.utc)
+            # Invalidate Gmail cache so next status check gets fresh counts
+            self._gmail_cache["last_updated"] = None
             logger.info(f"Pull completed: {self.pull_progress.processed} messages pulled, {self.pull_progress.errors} errors")
 
         except Exception as e:
@@ -239,6 +308,8 @@ class SyncManager:
             self.pull_progress.status = "error"
             self.pull_progress.error_message = str(e)
             self.pull_progress.completed_at = datetime.now(timezone.utc)
+            # Invalidate Gmail cache on error too
+            self._gmail_cache["last_updated"] = None
 
     def start_classify(self) -> bool:
         """Start classifying and embedding messages in background"""

@@ -22,6 +22,9 @@ os.environ.pop("ORGANIZE_MAIL_LLM_CMD", None)
 
 import pytest
 from unittest.mock import MagicMock, patch
+
+pytestmark = pytest.mark.integration
+
 from src.storage.storage import get_storage_backend
 from src.storage.memory_storage import InMemoryStorage
 from src.services import EmbeddingService, LLMProcessor, RAGQueryEngine
@@ -376,7 +379,7 @@ class TestQueryClassifierIntegrationWithEngine:
         
         # Call through both paths
         via_engine = memory_rag_engine._detect_query_type(query)
-        via_classifier = memory_rag_engine.classifier.detect_query_type(query)
+        via_classifier, _ = memory_rag_engine.classifier.detect_query_type(query)
         
         assert via_engine == via_classifier
 
@@ -384,7 +387,8 @@ class TestQueryClassifierIntegrationWithEngine:
         """All handler types should be initialized."""
         expected_handlers = {
             'conversation', 'aggregation', 'search-by-sender', 'search-by-attachment',
-            'classification', 'temporal', 'filtered-temporal', 'semantic'
+            'classification', 'temporal', 'filtered-temporal', 'semantic',
+            'list-previous-results'
         }
         
         assert expected_handlers == set(memory_rag_engine.handlers.keys())

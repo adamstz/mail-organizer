@@ -76,11 +76,54 @@ describe('EmailList Component', () => {
 
   // Action test: clicking the delete button removes the item from the list.
   it('deletes email when delete button is clicked', async () => {
+    // Also mock the batch delete endpoint
+    fetchMock.mockImplementation((url, options) => {
+      const urlStr = url.toString();
+
+      if (urlStr.includes('/messages') && !urlStr.includes('/body') && !urlStr.includes('/batch')) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: () => Promise.resolve({ data: exampleEmails, total: exampleEmails.length }),
+          text: () => Promise.resolve(JSON.stringify({ data: exampleEmails, total: exampleEmails.length })),
+        });
+      }
+
+      if (urlStr.includes('/body')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            sanitized_html: '<p>Dear team,</p>',
+            plain_text: 'Dear team,\n\n...',
+            has_external_images: false,
+            external_image_count: 0,
+            tracking_pixels_removed: 0,
+            has_blocked_content: false
+          }),
+        });
+      }
+
+      // Mock batch delete endpoint
+      if (urlStr.includes('/api/messages/batch') && options?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ success: true, failed: [] }),
+        });
+      }
+
+      return Promise.reject(new Error('Not found'));
+    });
+
     render(<EmailList />);
     const deleteButtons = await screen.findAllByLabelText('delete');
     const initialEmails = await screen.findAllByRole('listitem');
 
+    // Click the delete button to open confirmation dialog
     fireEvent.click(deleteButtons[0]);
+
+    // Wait for the dialog to appear and find the confirm button by text "Move to Trash"
+    const confirmButton = await screen.findByRole('button', { name: /move to trash/i });
+    fireEvent.click(confirmButton);
 
     // wait for the list to update and assert the count decreased by one
     await waitFor(() => {

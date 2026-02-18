@@ -15,6 +15,8 @@ from .storage import (
     get_message_by_id,
     get_unclassified_message_ids,
     count_classified_messages,
+    delete_message,
+    delete_messages,
     list_messages,
     list_messages_dicts,
     create_classification,
@@ -37,6 +39,12 @@ from .storage import (
     delete_chat_session,
     update_chat_session_title,
     update_chat_session_timestamp,
+    save_oauth_tokens,
+    get_oauth_tokens,
+    update_access_token,
+    delete_oauth_tokens,
+    is_gmail_connected,
+    get_authenticated_email,
 )
 from .sqlite_storage import SQLiteStorage, default_db_path
 from .memory_storage import InMemoryStorage
@@ -55,6 +63,8 @@ __all__ = [
     "get_message_by_id",
     "get_unclassified_message_ids",
     "count_classified_messages",
+    "delete_message",
+    "delete_messages",
     "list_messages",
     "list_messages_dicts",
     "create_classification",
@@ -77,6 +87,12 @@ __all__ = [
     "delete_chat_session",
     "update_chat_session_title",
     "update_chat_session_timestamp",
+    "save_oauth_tokens",
+    "get_oauth_tokens",
+    "update_access_token",
+    "delete_oauth_tokens",
+    "is_gmail_connected",
+    "get_authenticated_email",
     "InMemoryStorage",
     # sqlite
     "SQLiteStorage",

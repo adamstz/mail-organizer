@@ -1,12 +1,13 @@
 """Query classifier for routing queries to appropriate handlers."""
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from .llm_processor import LLMProcessor
 from .prompt_templates import QUERY_CLASSIFICATION_PROMPT
 from ..classification_labels import is_classification_query
+from ..utils.query_utils import extract_number_from_query
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,18 @@ class QueryClassifier:
 
     VALID_TYPES = {
         'conversation', 'aggregation', 'search-by-sender', 'search-by-attachment',
-        'classification', 'filtered-temporal', 'temporal', 'semantic'
+        'classification', 'filtered-temporal', 'temporal', 'semantic',
+        'list-previous-results'  # For follow-up queries referencing previous results
     }
+
+    # Patterns that indicate user wants to list/show previous results
+    LIST_PREVIOUS_PATTERNS = [
+        'list those', 'show those', 'show them', 'list them',
+        'what are those', 'what are they', 'show me those',
+        'list the', 'show the', 'display those', 'display them',
+        'can you list', 'can you show', 'give me those',
+        'what were those', 'what were they'
+    ]
 
     def __init__(self, llm: LLMProcessor):
         """Initialize the classifier.
@@ -30,26 +41,33 @@ class QueryClassifier:
         """
         self.llm = llm
 
-    def detect_query_type(self, question: str, chat_history: Optional[list] = None) -> str:
-        """Detect the query type using LLM classification.
+    def detect_query_type(self, question: str, chat_history: Optional[list] = None) -> Tuple[str, Optional[int]]:
+        """Detect the query type and requested count using LLM classification.
 
         Args:
             question: User's question
             chat_history: Optional list of previous messages for context
 
         Returns:
-            One of: 'conversation', 'aggregation', 'search-by-sender',
-                   'search-by-attachment', 'classification', 'filtered-temporal',
-                   'temporal', 'semantic'
+            Tuple of (query_type, count) where:
+            - query_type: One of 'conversation', 'aggregation', 'search-by-sender',
+                         'search-by-attachment', 'classification', 'filtered-temporal',
+                         'temporal', 'semantic', 'list-previous-results'
+            - count: Extracted number from query (None if not specified)
         """
         logger.info("[QUERY CLASSIFIER] ========== Starting query classification ==========")
         logger.info("[QUERY CLASSIFIER] Question: '%s'", question)
         logger.info("[QUERY CLASSIFIER] Chat history length: %d", len(chat_history) if chat_history else 0)
-        
+
         # Check if this is a classification query using centralized module first
         if is_classification_query(question):
             logger.info("[QUERY CLASSIFIER] ✓ Detected as 'classification' via is_classification_query()")
-            return 'classification'
+            return ('classification', None)
+
+        # Check if this is a follow-up query asking to list previous results
+        if self._is_list_previous_request(question, chat_history):
+            logger.info("[QUERY CLASSIFIER] ✓ Detected as 'list-previous-results' (follow-up list request)")
+            return ('list-previous-results', None)
 
         # Use LLM to intelligently classify the query type
         # LLM now handles chat history context internally
@@ -70,28 +88,28 @@ class QueryClassifier:
 
             classification_prompt = QUERY_CLASSIFICATION_PROMPT.replace("{question}", question)
             classification_prompt = classification_prompt.replace("{chat_context}", chat_context)
-            
+
             logger.info("[QUERY CLASSIFIER] ========== Sending prompt to LLM ==========")
             logger.info("[QUERY CLASSIFIER] Full prompt:\n%s", classification_prompt)
-            
+
             classification = self._call_llm_simple(classification_prompt).strip().lower()
-            
+
             logger.info("[QUERY CLASSIFIER] ========== LLM Response Received ==========")
             logger.info("[QUERY CLASSIFIER] Raw LLM response: '%s'", classification)
-            
-            detected_type = self._parse_classification(classification)
+
+            detected_type, detected_count = self._parse_classification(classification)
 
             logger.info("[QUERY CLASSIFIER] ========== Classification Result ==========")
-            logger.info("[QUERY CLASSIFIER] Detected type: %s", detected_type)
-            return detected_type
+            logger.info("[QUERY CLASSIFIER] Detected type: %s, count: %s", detected_type, detected_count)
+            return (detected_type, detected_count)
 
         except Exception as e:
             logger.warning("[QUERY CLASSIFIER] ========== LLM Classification Failed ==========")
             logger.warning("[QUERY CLASSIFIER] Error: %s", e)
             logger.warning("[QUERY CLASSIFIER] Falling back to heuristic classification")
-            fallback_type = self._fallback_classification(question)
-            logger.warning("[QUERY CLASSIFIER] Fallback returned: %s", fallback_type)
-            return fallback_type
+            fallback_type, fallback_count = self._fallback_classification(question)
+            logger.warning("[QUERY CLASSIFIER] Fallback returned: %s, count: %s", fallback_type, fallback_count)
+            return (fallback_type, fallback_count)
 
     def _call_llm_simple(self, prompt: str) -> str:
         """Call the LLM for classification."""
@@ -108,23 +126,23 @@ class QueryClassifier:
         else:
             return self.llm.invoke(prompt)
 
-    def _parse_classification(self, classification: str) -> str:
-        """Parse the LLM classification response.
+    def _parse_classification(self, classification: str) -> Tuple[str, Optional[int]]:
+        """Parse the LLM classification response to extract type and count.
 
         Args:
-            classification: Raw LLM response
+            classification: Raw LLM response (expected format: "type,count" or just "type")
 
         Returns:
-            Normalized query type string
+            Tuple of (query_type, count) where count is None if not specified
         """
         logger.debug("[QUERY CLASSIFIER] Parsing classification: '%s'", classification)
-        
+
         # Clean up the response - remove common prefixes and suffixes
         cleaned = classification.lower().strip()
-        
+
         # Remove common LLM preambles
         prefixes_to_remove = [
-            'the answer is', 'answer is', 'classification:', 
+            'the answer is', 'answer is', 'classification:',
             'type:', 'the type is', 'this is a', 'this is',
             'i would classify this as', 'i classify this as'
         ]
@@ -132,13 +150,40 @@ class QueryClassifier:
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):].strip()
                 logger.debug("[QUERY CLASSIFIER] Removed prefix '%s': '%s'", prefix, cleaned)
-        
+
+        # Split on comma to extract type and count
+        count: Optional[int] = None
+        type_str = cleaned
+
+        if ',' in cleaned:
+            parts = cleaned.split(',', 1)
+            type_str = parts[0].strip()
+            count_str = parts[1].strip()
+            logger.debug("[QUERY CLASSIFIER] Extracted type_str: '%s', count_str: '%s'", type_str, count_str)
+
+            # Parse count (handle "none", "null", empty, or numeric values)
+            if count_str and count_str not in ('none', 'null', ''):
+                try:
+                    count = int(count_str)
+                    # Cap at max_limit, floor at 1
+                    if count > 100:
+                        logger.debug("[QUERY CLASSIFIER] Capping count from %d to 100", count)
+                        count = 100
+                    elif count < 1:
+                        logger.debug("[QUERY CLASSIFIER] Count %d is below 1, ignoring", count)
+                        count = None
+                    else:
+                        logger.debug("[QUERY CLASSIFIER] Parsed count: %d", count)
+                except ValueError:
+                    logger.debug("[QUERY CLASSIFIER] Could not parse count '%s', ignoring", count_str)
+                    count = None
+
         # Get first word/phrase (handle hyphenated types)
-        words = cleaned.split()
+        words = type_str.split()
         first_word = words[0] if words else ''
-        
+
         logger.debug("[QUERY CLASSIFIER] Extracted first word: '%s'", first_word)
-        
+
         # Clean up punctuation
         first_word = first_word.strip('.,!?":;()[]{}')
         logger.debug("[QUERY CLASSIFIER] After punctuation cleanup: '%s'", first_word)
@@ -150,43 +195,100 @@ class QueryClassifier:
         # Check for valid types (exact match)
         if first_word in self.VALID_TYPES:
             logger.debug("[QUERY CLASSIFIER] ✓ Matched valid type: %s", first_word)
-            return first_word
-        
+            return (first_word, count)
+
         # Try to find valid type anywhere in the response
         logger.debug("[QUERY CLASSIFIER] First word not in valid types, searching response...")
         for valid_type in self.VALID_TYPES:
-            if valid_type in cleaned:
+            if valid_type in type_str:
                 logger.debug("[QUERY CLASSIFIER] ✓ Found valid type in response: %s", valid_type)
-                return valid_type
+                return (valid_type, count)
 
         # Map common response words to actual types
         logger.debug("[QUERY CLASSIFIER] Trying fallback mappings...")
         if first_word in ('recent', 'latest', 'newest', 'oldest'):
             logger.debug("[QUERY CLASSIFIER] Mapped '%s' → filtered-temporal", first_word)
-            return 'filtered-temporal'
+            return ('filtered-temporal', count)
         elif first_word == 'count':
             logger.debug("[QUERY CLASSIFIER] Mapped 'count' → aggregation")
-            return 'aggregation'
+            return ('aggregation', count)
         elif 'conversation' in classification or first_word in ('hello', 'hi', 'thanks', 'help'):
-            return 'conversation'
+            return ('conversation', count)
         elif 'aggregation' in classification or 'statistic' in classification or 'count' in first_word:
-            return 'aggregation'
+            return ('aggregation', count)
         elif 'sender' in classification:
-            return 'search-by-sender'
+            return ('search-by-sender', count)
         elif 'attachment' in classification:
-            return 'search-by-attachment'
+            return ('search-by-attachment', count)
         elif 'filtered-temporal' in classification:
-            return 'filtered-temporal'
+            return ('filtered-temporal', count)
         elif 'temporal' in classification:
-            return 'temporal'
+            return ('temporal', count)
         elif 'semantic' in classification:
-            return 'semantic'
+            return ('semantic', count)
+        elif 'list-previous' in classification or 'previous-results' in classification:
+            return ('list-previous-results', count)
         else:
             logger.debug(
                 "[QUERY CLASSIFIER] LLM returned unexpected value: '%s', defaulting to semantic",
                 classification,
             )
-            return 'semantic'
+            return ('semantic', count)
+
+    def _is_list_previous_request(self, question: str, chat_history: Optional[list]) -> bool:
+        """Check if the question is asking to list/show results from a previous query.
+
+        Detects patterns like "list those 78 emails", "show them", "what are they".
+
+        Args:
+            question: Current question
+            chat_history: Previous conversation messages
+
+        Returns:
+            True if this appears to be a follow-up request for listing previous results
+        """
+        if not chat_history or len(chat_history) < 2:
+            # Need at least one exchange (user + assistant) to have previous results
+            return False
+
+        question_lower = question.lower()
+
+        # Check for explicit list/show patterns
+        for pattern in self.LIST_PREVIOUS_PATTERNS:
+            if pattern in question_lower:
+                logger.debug(
+                    "[QUERY CLASSIFIER] Matched list-previous pattern: '%s'",
+                    pattern
+                )
+                return True
+
+        # Check for numeric reference with list/show verb
+        # Examples: "list those 78 emails", "show the 78", "list 78 emails"
+        import re
+        numeric_list_pattern = r'\b(list|show|display|give me)\b.*\b\d+\b'
+        if re.search(numeric_list_pattern, question_lower):
+            logger.debug(
+                "[QUERY CLASSIFIER] Matched numeric list pattern in: '%s'",
+                question_lower
+            )
+            return True
+
+        # Check for pronouns with list/show verbs
+        # Examples: "show them to me", "list all of them"
+        pronouns = ['them', 'those', 'these', 'they']
+        list_verbs = ['list', 'show', 'display', 'give', 'get', 'retrieve']
+
+        has_pronoun = any(p in question_lower for p in pronouns)
+        has_list_verb = any(v in question_lower for v in list_verbs)
+
+        if has_pronoun and has_list_verb:
+            logger.debug(
+                "[QUERY CLASSIFIER] Matched pronoun + list verb: pronoun=%s, verb=%s",
+                has_pronoun, has_list_verb
+            )
+            return True
+
+        return False
 
     def _is_contextual_followup(self, question: str, chat_history: list) -> bool:
         """Check if current question is a contextual follow-up that references previous context.
@@ -257,20 +359,23 @@ class QueryClassifier:
             (is_ambiguous_continuation and has_history)
         ) and has_history
 
-    def _fallback_classification(self, question: str) -> str:
+    def _fallback_classification(self, question: str) -> Tuple[str, Optional[int]]:
         """Use heuristics to classify the query when LLM fails.
 
         Args:
             question: User's question
 
         Returns:
-            Query type string
+            Tuple of (query_type, count) where count is extracted via regex or None
         """
         question_lower = question.lower()
 
+        # Extract count from query using regex (same as rag_engine fallback)
+        count = extract_number_from_query(question, default=None)
+
         # Check for conversational queries
         if any(word in question_lower for word in ['hello', 'hi', 'thanks', 'thank you', 'help', 'what can you']):
-            return 'conversation'
+            return ('conversation', count)
 
         # Check for counting queries
         if 'how many' in question_lower or 'count' in question_lower or 'number of' in question_lower:
@@ -281,15 +386,15 @@ class QueryClassifier:
             ]) or '@' in question_lower
 
             if has_specific_topic or 'total' not in question_lower:
-                return 'aggregation'
+                return ('aggregation', count)
 
         # Check for temporal patterns
         has_temporal = any(word in question_lower for word in ['recent', 'latest', 'last', 'newest', 'first', 'oldest'])
         has_content_filter = any(word in question_lower for word in ['from', 'about', 'uber', 'amazon', 'linkedin'])
 
         if has_temporal and has_content_filter:
-            return 'filtered-temporal'
+            return ('filtered-temporal', count)
         elif has_temporal:
-            return 'temporal'
+            return ('temporal', count)
         else:
-            return 'semantic'
+            return ('semantic', count)

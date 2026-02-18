@@ -1,33 +1,69 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from fastapi.responses import RedirectResponse, Response
+from typing import List, Optional, Annotated
 from pydantic import BaseModel
 import logging
 import asyncio
 from collections import deque
-from datetime import datetime
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+import os
 
 from . import storage
 from .services import LLMProcessor, EmbeddingService, RAGQueryEngine
 from .sync_manager import get_sync_manager
+from .auth import (
+    get_google_auth_url,
+    exchange_code_for_tokens,
+    get_current_user,
+    create_jwt_token,
+    AuthenticatedUser,
+    require_auth,
+)
+from .auth.middleware import set_auth_cookie, clear_auth_cookie
 
-app = FastAPI(title="organize-mail backend")
 
-# Allow CORS from common dev server origins used by Vite.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events."""
+    # Startup
+    storage.init_db()
+    logging.info("Database initialized")
+    yield
+    # Shutdown (nothing needed currently)
+
+
+app = FastAPI(title="organize-mail backend", lifespan=lifespan)
+
+
+# Get CORS origins from environment or use defaults for local development
+def get_cors_origins() -> list:
+    """Get allowed CORS origins from environment variable or defaults."""
+    cors_origins_env = os.environ.get("CORS_ORIGINS")
+    if cors_origins_env:
+        # Support comma-separated list of origins
+        return [origin.strip() for origin in cors_origins_env.split(",")]
+    # Default to common local dev server origins
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+    return [
+        frontend_url,
+        frontend_url.replace("localhost", "127.0.0.1"),
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+
+
+# Allow CORS from configured origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup."""
-    storage.init_db()
-    logging.info("Database initialized")
 
 
 # Log buffer for real-time viewing
@@ -95,6 +131,279 @@ async def health():
     return {"status": "ok"}
 
 
+# =============================================================================
+# Authentication Endpoints
+# =============================================================================
+
+@app.get("/api/auth/login")
+async def auth_login(
+    redirect_url: Annotated[Optional[str], Query()] = None,
+    force: Annotated[bool, Query()] = False,
+    user: Optional[AuthenticatedUser] = Depends(get_current_user)
+):
+    """Redirect to Google OAuth consent screen or create session if tokens exist.
+
+    This endpoint checks for existing valid OAuth tokens before redirecting to Google:
+    1. If force=true → always redirect to Google OAuth (for reconnecting Gmail)
+    2. If user has valid JWT session AND valid Gmail tokens → redirect to frontend
+    3. If user has valid OAuth tokens in DB → create JWT session and redirect
+    4. If user has expired OAuth tokens → refresh them, create session, redirect
+    5. Otherwise → redirect to Google OAuth consent screen
+
+    Args:
+        redirect_url: Optional URL to redirect to after successful auth (stored in state)
+        force: If true, bypass JWT check and force OAuth flow (for reconnecting Gmail)
+        user: Current authenticated user (if any)
+    """
+    logger.info(f"Starting OAuth login flow (force={force})")
+
+    try:
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        target_redirect = redirect_url or frontend_url
+
+        # If force=true, skip all checks and go straight to OAuth
+        if force:
+            logger.info("Force OAuth flow requested, redirecting to Google OAuth")
+            auth_url, _ = get_google_auth_url(state=redirect_url)
+            return RedirectResponse(url=auth_url)
+
+        # Check if user already has a valid JWT session AND valid Gmail tokens
+        if user:
+            gmail_status = storage.is_gmail_connected(user.email)
+            if gmail_status["connected"]:
+                logger.info(f"User {user.email} has valid JWT and Gmail tokens, redirecting to frontend")
+                return RedirectResponse(url=target_redirect, status_code=302)
+            else:
+                # User has JWT but Gmail is disconnected - need OAuth
+                logger.info(f"User {user.email} has valid JWT but Gmail disconnected, redirecting to OAuth")
+                auth_url, _ = get_google_auth_url(state=redirect_url)
+                return RedirectResponse(url=auth_url)
+
+        # Check if we can find OAuth tokens in the database
+        # For single-user deployments, get the authenticated email
+        authenticated_email = storage.get_authenticated_email()
+
+        if authenticated_email:
+            logger.info(f"Found authenticated user in database: {authenticated_email}")
+
+            # Get stored OAuth tokens
+            tokens_data = storage.get_oauth_tokens(authenticated_email)
+
+            if tokens_data:
+                from datetime import datetime, timezone
+
+                refresh_token = tokens_data.get("refresh_token")
+                token_expiry = tokens_data.get("token_expiry")
+
+                logger.info(f"Found OAuth tokens for {authenticated_email}, checking expiry")
+
+                # Check if access token is still valid
+                now = datetime.now(timezone.utc)
+
+                if token_expiry and token_expiry > now:
+                    # Token is still valid, create JWT session and redirect
+                    logger.info(f"Access token still valid until {token_expiry}, creating JWT session")
+
+                    jwt_token = create_jwt_token(authenticated_email)
+                    response = RedirectResponse(url=target_redirect, status_code=302)
+                    set_auth_cookie(response, jwt_token)
+
+                    return response
+
+                elif refresh_token:
+                    # Access token expired, but we have a refresh token
+                    logger.info(f"Access token expired, attempting refresh for {authenticated_email}")
+
+                    try:
+                        from .auth.oauth import refresh_access_token
+
+                        new_access_token, new_expiry = await refresh_access_token(refresh_token)
+
+                        # Update stored tokens
+                        storage.update_access_token(
+                            email=authenticated_email,
+                            access_token=new_access_token,
+                            token_expiry=new_expiry
+                        )
+
+                        logger.info(f"Successfully refreshed access token for {authenticated_email}")
+
+                        # Create JWT session and redirect
+                        jwt_token = create_jwt_token(authenticated_email)
+                        response = RedirectResponse(url=target_redirect, status_code=302)
+                        set_auth_cookie(response, jwt_token)
+
+                        return response
+
+                    except Exception as refresh_error:
+                        logger.warning(
+                            f"Failed to refresh token for {authenticated_email}: {refresh_error}. "
+                            "Will proceed with full OAuth flow."
+                        )
+                        # Fall through to OAuth flow below
+                else:
+                    logger.info(f"No refresh token available for {authenticated_email}, need full OAuth")
+
+        # No valid tokens found, proceed with full OAuth flow
+        logger.info("No valid tokens found, redirecting to Google OAuth consent screen")
+        auth_url, _ = get_google_auth_url(state=redirect_url)
+        return RedirectResponse(url=auth_url)
+
+    except ValueError as e:
+        logger.error(f"OAuth configuration error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+@app.get("/api/auth/callback")
+async def auth_callback(code: str = Query(...), state: Optional[str] = Query(None)):
+    """Handle OAuth callback from Google.
+
+    Exchanges the authorization code for tokens, stores them,
+    and sets a JWT cookie for the session.
+    """
+    logger.info("Received OAuth callback")
+
+    try:
+        # Exchange code for tokens (returns Credentials object from Google SDK)
+        credentials = await exchange_code_for_tokens(code, state=state)
+
+        # Extract email from ID token
+        from .auth.oauth import get_email_from_credentials
+        email = get_email_from_credentials(credentials)
+        if not email:
+            raise ValueError("Could not extract email from credentials")
+
+        # Store tokens in database
+        storage.save_oauth_tokens(
+            email=email,
+            access_token=credentials.token,
+            refresh_token=credentials.refresh_token,
+            token_expiry=credentials.expiry or datetime.now(timezone.utc),
+        )
+
+        logger.info(f"OAuth tokens stored for user: {email}")
+
+        # Create JWT for session
+        jwt_token = create_jwt_token(email)
+
+        # Determine redirect URL
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        redirect_url = frontend_url
+
+        # Parse state parameter to extract original redirect URL if present
+        if state:
+            # If state contains /api/auth/login, extract the redirect_url param from it
+            if "/api/auth/login" in state:
+                try:
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(state)
+                    params = parse_qs(parsed.query)
+                    if "redirect_url" in params:
+                        redirect_url = params["redirect_url"][0]
+                        logger.info(f"Extracted redirect URL from state: {redirect_url}")
+                except Exception as e:
+                    logger.warning(f"Failed to parse state parameter: {e}")
+                    redirect_url = frontend_url
+            else:
+                # Use state directly if it doesn't contain the login endpoint
+                redirect_url = state
+
+        # Validate redirect URL to prevent open redirects
+        # Only allow redirects to the frontend URL or localhost variants
+        allowed_hosts = ["localhost", "127.0.0.1"]
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(redirect_url)
+            if parsed.hostname not in allowed_hosts:
+                logger.warning(f"Rejecting redirect to untrusted host: {parsed.hostname}")
+                redirect_url = frontend_url
+        except Exception:
+            redirect_url = frontend_url
+
+        logger.info(f"Redirecting to: {redirect_url}")
+
+        # Create redirect response with auth cookie
+        response = RedirectResponse(url=redirect_url, status_code=302)
+        set_auth_cookie(response, jwt_token)
+
+        return response
+
+    except ValueError as e:
+        logger.error(f"OAuth callback error: {e}")
+        # Redirect to frontend with error
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        error_url = f"{frontend_url}?auth_error={str(e)}"
+        return RedirectResponse(url=error_url, status_code=302)
+
+
+@app.get("/api/auth/status")
+async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_user)):
+    """Check authentication status including Gmail connection.
+
+    Returns the current user's email if authenticated, Gmail connection status,
+    and attempts to refresh expired tokens if possible.
+    """
+    if user:
+        # Check Gmail OAuth token status
+        gmail_status = storage.is_gmail_connected(user.email)
+
+        # If tokens expired but can be refreshed, try to refresh them
+        if not gmail_status["connected"] and gmail_status["can_refresh"]:
+            logger.info(f"Access token expired for {user.email}, attempting auto-refresh")
+            try:
+                from .auth.oauth import refresh_access_token
+
+                tokens_data = storage.get_oauth_tokens(user.email)
+                if tokens_data and tokens_data.get("refresh_token"):
+                    new_access_token, new_expiry = await refresh_access_token(
+                        tokens_data["refresh_token"]
+                    )
+                    storage.update_access_token(
+                        email=user.email,
+                        access_token=new_access_token,
+                        token_expiry=new_expiry,
+                    )
+                    logger.info(f"Successfully refreshed access token for {user.email}")
+                    gmail_status = {"connected": True, "can_refresh": True, "token_expiry": new_expiry}
+            except Exception as refresh_error:
+                logger.warning(f"Failed to auto-refresh token: {refresh_error}")
+                # gmail_status remains as is (not connected, can_refresh may now be false)
+
+        return {
+            "authenticated": True,
+            "email": user.email,
+            "gmail_connected": gmail_status["connected"],
+        }
+    return {
+        "authenticated": False,
+        "email": None,
+        "gmail_connected": False,
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response, user: Optional[AuthenticatedUser] = Depends(get_current_user)):
+    """Log out by clearing the auth cookie.
+
+    Optionally also removes stored tokens from database.
+    """
+    if user:
+        # Optionally delete tokens from database
+        try:
+            storage.delete_oauth_tokens(user.email)
+            logger.info(f"Deleted OAuth tokens for user: {user.email}")
+        except Exception as e:
+            logger.warning(f"Failed to delete tokens from database: {e}")
+
+    # Clear the auth cookie
+    clear_auth_cookie(response)
+
+    return {"status": "logged_out"}
+
+
 @app.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
     """WebSocket endpoint for real-time log streaming."""
@@ -123,8 +432,11 @@ async def websocket_logs(websocket: WebSocket):
 
 
 @app.get("/api/logs")
-async def get_logs(limit: int = 100):
-    """Get recent logs as JSON array."""
+async def get_logs(
+    limit: int = 100,
+    user: AuthenticatedUser = Depends(require_auth)
+):
+    """Get recent logs as JSON array. Requires authentication."""
     logs = list(log_buffer)
     logger.debug(f"Logs requested: returning {min(limit, len(logs))} of {len(logs)} entries")
     return logs[-limit:] if limit < len(logs) else logs
@@ -137,8 +449,11 @@ class FrontendLogRequest(BaseModel):
 
 
 @app.post("/api/frontend-log")
-async def receive_frontend_log(log_entry: FrontendLogRequest):
-    """Receive log entries from the frontend and add them to the log buffer."""
+async def receive_frontend_log(
+    log_entry: FrontendLogRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+):
+    """Receive log entries from the frontend and add them to the log buffer. Requires authentication."""
     try:
         # Create a log entry that matches our format
         log_data = {
@@ -172,8 +487,12 @@ async def receive_frontend_log(log_entry: FrontendLogRequest):
 
 
 @app.get("/messages")
-async def get_messages(limit: int = 50, offset: int = 0) -> dict:
-    """Return messages from storage with HTML bodies included.
+async def get_messages(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Return messages from storage with HTML bodies included. Requires authentication.
 
     Query params:
         - limit: max messages to return (default 50)
@@ -243,8 +562,11 @@ async def get_messages(limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/messages/{message_id}")
-async def get_message(message_id: str) -> dict:
-    """Get a single message by ID with its classification data."""
+async def get_message(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get a single message by ID with its classification data. Requires authentication."""
     logger.debug(f"GET /messages/{message_id}")
     msg = storage.get_message_by_id(message_id)
     if not msg:
@@ -252,6 +574,83 @@ async def get_message(message_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Message not found")
     logger.debug(f"Found message: {msg.subject[:50]}")
     return msg.to_dict()
+
+
+class BatchDeleteRequest(BaseModel):
+    """Request body for batch delete operation."""
+    ids: List[str]
+
+
+# NOTE: Batch route must come BEFORE the individual message route to avoid
+# /api/messages/batch being matched by /api/messages/{message_id}
+@app.delete("/api/messages/batch")
+async def batch_delete_messages(
+    request: BatchDeleteRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Delete multiple messages (move to Gmail trash and remove from local storage).
+
+    Requires authentication.
+    """
+    message_ids = request.ids
+    logger.info(f"DELETE /api/messages/batch - {len(message_ids)} messages")
+
+    if not message_ids:
+        return {"deleted": 0, "failed": []}
+
+    failed_ids = []
+
+    # First, try to batch trash in Gmail
+    try:
+        from .clients.gmail_client import build_gmail_service, batch_trash_messages as gmail_batch_trash
+        gmail_service = build_gmail_service()
+        gmail_batch_trash(gmail_service, message_ids)
+        logger.info(f"Batch trashed {len(message_ids)} messages in Gmail")
+    except Exception as e:
+        logger.warning(f"Could not batch trash messages in Gmail: {e}")
+        # Continue to delete from local storage even if Gmail fails
+
+    # Delete from local storage
+    deleted_count = storage.delete_messages(message_ids)
+    logger.info(f"Deleted {deleted_count} messages from local storage")
+
+    return {
+        "deleted": deleted_count,
+        "failed": failed_ids,
+        "total_requested": len(message_ids),
+    }
+
+
+@app.delete("/api/messages/{message_id}")
+async def delete_message(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Delete a single message (move to Gmail trash and remove from local storage).
+
+    Requires authentication.
+    """
+    logger.info(f"DELETE /api/messages/{message_id}")
+
+    # First, try to trash in Gmail
+    try:
+        from .clients.gmail_client import build_gmail_service, trash_message as gmail_trash_message
+        gmail_service = build_gmail_service()
+        gmail_trash_message(gmail_service, message_id)
+        logger.info(f"Message {message_id} moved to Gmail trash")
+    except Exception as e:
+        logger.warning(f"Could not trash message in Gmail (may be offline or already deleted): {e}")
+        # Continue to delete from local storage even if Gmail fails
+
+    # Delete from local storage
+    deleted = storage.delete_message(message_id)
+    if not deleted:
+        logger.warning(f"Message not found in local storage: {message_id}")
+        # Don't raise 404 since we may have already trashed it in Gmail
+        return {"message_id": message_id, "deleted": False, "detail": "Message not found in local storage"}
+
+    logger.info(f"Message {message_id} deleted from local storage")
+    return {"message_id": message_id, "deleted": True}
 
 
 def _extract_html_from_payload(payload: dict, logger) -> str:
@@ -322,15 +721,6 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
         longest = max(html_parts, key=len)
         logger.info(f"[MIME EXTRACTION] Selected longest HTML: {len(longest)} chars")
 
-        # Log if there are images detected for debugging
-        if '<img' in longest:
-            img_count = longest.count('<img')
-            logger.info(f"[MIME EXTRACTION] HTML contains {img_count} <img> tag(s)")
-            print(f"✓ Found {img_count} <img> tags in extracted HTML")
-        else:
-            logger.warning(f"[MIME EXTRACTION] No <img> tags found in HTML")
-            print("⚠ WARNING: No <img> tags found in extracted HTML!")
-
         return longest
 
     logger.warning(f"[MIME EXTRACTION] No HTML parts found in payload")
@@ -338,8 +728,11 @@ def _extract_html_from_payload(payload: dict, logger) -> str:
 
 
 @app.get("/messages/{message_id}/body")
-async def get_message_body(message_id: str) -> dict:
-    """Get email body HTML and metadata.
+async def get_message_body(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get email body HTML and metadata. Requires authentication.
 
     Returns raw HTML extracted from the email payload.
     Frontend is responsible for sanitization with DOMPurify.
@@ -410,8 +803,11 @@ async def get_message_body(message_id: str) -> dict:
 
 
 @app.get("/messages/{message_id}/classifications")
-async def get_message_classifications(message_id: str) -> List[dict]:
-    """Get all classification records for a message (historical)."""
+async def get_message_classifications(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> List[dict]:
+    """Get all classification records for a message (historical). Requires authentication."""
     # Verify message exists
     msg = storage.get_message_by_id(message_id)
     if not msg:
@@ -422,8 +818,11 @@ async def get_message_classifications(message_id: str) -> List[dict]:
 
 
 @app.get("/messages/{message_id}/classification/latest")
-async def get_latest_classification(message_id: str) -> Optional[dict]:
-    """Get the most recent classification for a message."""
+async def get_latest_classification(
+    message_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> Optional[dict]:
+    """Get the most recent classification for a message. Requires authentication."""
     logger.debug(f"GET /messages/{message_id}/classification/latest")
     # Verify message exists
     msg = storage.get_message_by_id(message_id)
@@ -440,8 +839,10 @@ async def get_latest_classification(message_id: str) -> Optional[dict]:
 
 
 @app.get("/stats")
-async def get_stats() -> dict:
-    """Get classification statistics."""
+async def get_stats(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get classification statistics. Requires authentication."""
     logger.info("GET /stats - calculating statistics")
     all_message_ids = storage.get_message_ids()
     unclassified_ids = storage.get_unclassified_message_ids()
@@ -482,8 +883,11 @@ async def get_stats() -> dict:
 
 
 @app.get("/labels")
-async def get_labels(min_count: int = 3) -> dict:
-    """Get all unique classification labels with their counts.
+async def get_labels(
+    min_count: int = 3,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get all unique classification labels with their counts. Requires authentication.
 
     Args:
         min_count: Minimum number of occurrences to include a label (default: 3)
@@ -505,8 +909,13 @@ async def get_labels(min_count: int = 3) -> dict:
 
 
 @app.get("/messages/filter/priority/{priority}")
-async def filter_by_priority(priority: str, limit: int = 50, offset: int = 0) -> dict:
-    """Get messages filtered by priority (high, medium, low, unclassified)."""
+async def filter_by_priority(
+    priority: str,
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get messages filtered by priority (high, medium, low, unclassified). Requires authentication."""
     import time
     start_time = time.time()
     logger.info(f"GET /messages/filter/priority/{priority} - limit={limit}, offset={offset}")
@@ -530,8 +939,13 @@ async def filter_by_priority(priority: str, limit: int = 50, offset: int = 0) ->
 
 
 @app.get("/messages/filter/label/{label}")
-async def filter_by_label(label: str, limit: int = 50, offset: int = 0) -> dict:
-    """Get messages filtered by classification label."""
+async def filter_by_label(
+    label: str,
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get messages filtered by classification label. Requires authentication."""
     import time
     start_time = time.time()
     logger.info(f"GET /messages/filter/label/{label} - limit={limit}, offset={offset}")
@@ -551,8 +965,12 @@ async def filter_by_label(label: str, limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/messages/filter/classified")
-async def filter_classified(limit: int = 50, offset: int = 0) -> dict:
-    """Get only classified messages."""
+async def filter_classified(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get only classified messages. Requires authentication."""
     logger.info(f"GET /messages/filter/classified - limit={limit}, offset={offset}")
     # Use database-level filtering with index on latest_classification_id
     messages, total = storage.list_classified_messages(limit=limit, offset=offset)
@@ -567,8 +985,12 @@ async def filter_classified(limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/messages/filter/unclassified")
-async def filter_unclassified(limit: int = 50, offset: int = 0) -> dict:
-    """Get only unclassified messages."""
+async def filter_unclassified(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get only unclassified messages. Requires authentication."""
     logger.info(f"GET /messages/filter/unclassified - limit={limit}, offset={offset}")
     # Use database-level filtering
     messages, total = storage.list_unclassified_messages(limit=limit, offset=offset)
@@ -588,9 +1010,10 @@ async def filter_advanced(
     labels: Optional[str] = None,  # Comma-separated list of labels
     status: Optional[str] = None,  # 'classified', 'unclassified', or 'all'
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
-    """Advanced filtering with multiple criteria (priority, labels, status).
+    """Advanced filtering with multiple criteria (priority, labels, status). Requires authentication.
 
     Query params:
         - priority: 'high', 'normal', or 'low'
@@ -718,8 +1141,10 @@ async def filter_advanced(
 
 
 @app.get("/models")
-async def list_models() -> dict:
-    """List available LLM models from Ollama."""
+async def list_models(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """List available LLM models from Ollama. Requires authentication."""
     import json
     import os
     import urllib.request
@@ -746,8 +1171,11 @@ class SetModelRequest(BaseModel):
 
 
 @app.post("/api/set-model")
-async def set_model(request: SetModelRequest) -> dict:
-    """Set the active LLM model for all subsequent operations."""
+async def set_model(
+    request: SetModelRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Set the active LLM model for all subsequent operations. Requires authentication."""
     import os
 
     try:
@@ -764,8 +1192,10 @@ async def set_model(request: SetModelRequest) -> dict:
 
 
 @app.get("/api/current-model")
-async def get_current_model() -> dict:
-    """Get the currently active LLM model."""
+async def get_current_model(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get the currently active LLM model. Requires authentication."""
     import os
 
     current_model = os.getenv("LLM_MODEL", "")
@@ -778,8 +1208,10 @@ async def get_current_model() -> dict:
 
 
 @app.post("/api/ollama/start")
-async def start_ollama() -> dict:
-    """Start the Ollama service."""
+async def start_ollama(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Start the Ollama service. Requires authentication."""
     import subprocess
     import os
 
@@ -806,8 +1238,12 @@ class ReclassifyRequest(BaseModel):
 
 
 @app.post("/messages/{message_id}/reclassify")
-async def reclassify_message(message_id: str, request: ReclassifyRequest) -> dict:
-    """Reclassify a message using the specified model."""
+async def reclassify_message(
+    message_id: str,
+    request: ReclassifyRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Reclassify a message using the specified model. Requires authentication."""
     import os
     import logging
 
@@ -961,8 +1397,10 @@ async def generate_session_title(chat_session_id: str, first_message: str):
 
 
 @app.get("/api/sync-status")
-async def get_sync_status() -> dict:
-    """Get current sync status including Gmail vs DB counts and progress."""
+async def get_sync_status(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get current sync status including Gmail vs DB counts and progress. Requires authentication."""
     logger.info("GET /api/sync-status")
     sync_manager = get_sync_manager()
     status = sync_manager.get_sync_status()
@@ -971,8 +1409,10 @@ async def get_sync_status() -> dict:
 
 
 @app.post("/api/sync/pull")
-async def sync_pull() -> dict:
-    """Start pulling new messages from Gmail INBOX."""
+async def sync_pull(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Start pulling new messages from Gmail INBOX. Requires authentication."""
     logger.info("POST /api/sync/pull - Starting pull operation")
     sync_manager = get_sync_manager()
 
@@ -990,8 +1430,10 @@ async def sync_pull() -> dict:
 
 
 @app.post("/api/sync/classify")
-async def sync_classify() -> dict:
-    """Start classifying and embedding unclassified messages."""
+async def sync_classify(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Start classifying and embedding unclassified messages. Requires authentication."""
     logger.info("POST /api/sync/classify - Starting classify and embed operation")
     sync_manager = get_sync_manager()
 
@@ -1012,7 +1454,7 @@ class QueryRequest(BaseModel):
     """Request model for RAG queries."""
     question: str
     chat_session_id: Optional[str] = None
-    top_k: Optional[int] = 5
+    top_k: Optional[int] = None  # Let backend extract from query (LLM → regex → default 10)
     similarity_threshold: Optional[float] = 0.5
     model: Optional[str] = None
 
@@ -1028,8 +1470,11 @@ class ChatSessionUpdateRequest(BaseModel):
 
 
 @app.post("/api/query")
-async def query_emails(request: QueryRequest) -> dict:
-    """Ask a question and get an answer based on email content.
+async def query_emails(
+    request: QueryRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Ask a question and get an answer based on email content. Requires authentication.
 
     This uses RAG (Retrieval-Augmented Generation):
     1. Converts your question to a vector embedding
@@ -1105,7 +1550,8 @@ async def query_emails(request: QueryRequest) -> dict:
             question=request.question,
             top_k=request.top_k,
             similarity_threshold=request.similarity_threshold,
-            chat_history=chat_history
+            chat_history=chat_history,
+            session_id=request.chat_session_id,  # Pass session ID for result caching
         )
 
         # Save assistant response to chat session if chat_session_id provided
@@ -1146,8 +1592,10 @@ async def query_emails(request: QueryRequest) -> dict:
 
 
 @app.get("/api/embedding_status")
-async def embedding_status() -> dict:
-    """Get statistics about embedding coverage.
+async def embedding_status(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get statistics about embedding coverage. Requires authentication.
 
     Returns how many emails have been embedded and are ready for semantic search.
     """
@@ -1193,8 +1641,11 @@ async def embedding_status() -> dict:
 
 # Chat session endpoints
 @app.post("/api/chat-sessions")
-async def create_chat_session(request: ChatSessionCreateRequest) -> dict:
-    """Create a new chat session."""
+async def create_chat_session(
+    request: ChatSessionCreateRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Create a new chat session. Requires authentication."""
     logger.info(f"Creating new chat session with title: {request.title}")
 
     from datetime import datetime, timezone
@@ -1211,8 +1662,12 @@ async def create_chat_session(request: ChatSessionCreateRequest) -> dict:
 
 
 @app.get("/api/chat-sessions")
-async def list_chat_sessions(limit: int = 50, offset: int = 0) -> dict:
-    """List all chat sessions ordered by most recent."""
+async def list_chat_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """List all chat sessions ordered by most recent. Requires authentication."""
     logger.info(f"Listing chat sessions: limit={limit}, offset={offset}")
 
     sessions = storage.list_chat_sessions(limit=limit, offset=offset)
@@ -1226,8 +1681,13 @@ async def list_chat_sessions(limit: int = 50, offset: int = 0) -> dict:
 
 
 @app.get("/api/chat-sessions/{chat_session_id}/messages")
-async def get_chat_session_messages(chat_session_id: str, limit: int = 100, offset: int = 0) -> dict:
-    """Get all messages for a specific chat session."""
+async def get_chat_session_messages(
+    chat_session_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Get all messages for a specific chat session. Requires authentication."""
     logger.info(f"Getting messages for chat session {chat_session_id}: limit={limit}, offset={offset}")
 
     messages = storage.get_chat_session_messages(chat_session_id=chat_session_id, limit=limit, offset=offset)
@@ -1242,8 +1702,11 @@ async def get_chat_session_messages(chat_session_id: str, limit: int = 100, offs
 
 
 @app.delete("/api/chat-sessions/{chat_session_id}")
-async def delete_chat_session(chat_session_id: str) -> dict:
-    """Delete a chat session and all its messages."""
+async def delete_chat_session(
+    chat_session_id: str,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Delete a chat session and all its messages. Requires authentication."""
     logger.info(f"Deleting chat session {chat_session_id}")
 
     storage.delete_chat_session(chat_session_id=chat_session_id)
@@ -1255,8 +1718,12 @@ async def delete_chat_session(chat_session_id: str) -> dict:
 
 
 @app.patch("/api/chat-sessions/{chat_session_id}")
-async def update_chat_session(chat_session_id: str, request: ChatSessionUpdateRequest) -> dict:
-    """Update a chat session's title."""
+async def update_chat_session(
+    chat_session_id: str,
+    request: ChatSessionUpdateRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Update a chat session's title. Requires authentication."""
     logger.info(f"Updating chat session {chat_session_id} title to: {request.title}")
 
     storage.update_chat_session_title(chat_session_id=chat_session_id, title=request.title)

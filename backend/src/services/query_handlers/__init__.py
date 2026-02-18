@@ -12,6 +12,7 @@ from .attachment import AttachmentHandler
 from .classification import ClassificationHandler
 from .temporal import TemporalHandler
 from .semantic import SemanticHandler
+from .previous_results import PreviousResultsHandler
 
 __all__ = [
     'QueryHandler',
@@ -22,4 +23,5 @@ __all__ = [
     'ClassificationHandler',
     'TemporalHandler',
     'SemanticHandler',
+    'PreviousResultsHandler',
 ]

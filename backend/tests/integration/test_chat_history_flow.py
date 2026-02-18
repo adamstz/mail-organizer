@@ -4,6 +4,8 @@ from unittest.mock import Mock, AsyncMock, MagicMock
 import sys
 import os
 
+pytestmark = pytest.mark.integration
+
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
 
@@ -213,7 +215,7 @@ class TestChatHistoryFlow:
             # Mock LLM response if needed for classification
             self.mock_llm.invoke.return_value = "classification"
 
-            query_type = classifier.detect_query_type(question, chat_history)
+            query_type, _ = classifier.detect_query_type(question, chat_history)
             # With history context, these should route to appropriate handler
             assert query_type in ['classification', 'aggregation', 'semantic'], \
                 f"Expected valid query type for '{question}', got '{query_type}'"

@@ -217,7 +217,7 @@ class LLMProcessor:
         logger.info("[LLM INVOKE] Provider: %s, Model: %s", self.provider, self.model)
         logger.info("[LLM INVOKE] Prompt length: %d chars", len(prompt))
         logger.debug("[LLM INVOKE] Full prompt:\n%s", prompt)
-        
+
         if self.llm:
             # Use LangChain
             logger.info(f"[LLM INVOKE] Using LangChain with {self.provider}/{self.model}")

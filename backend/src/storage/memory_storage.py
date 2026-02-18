@@ -96,6 +96,26 @@ class InMemoryStorage(StorageBackend):
     def get_message_ids(self) -> List[str]:
         return list(self._messages.keys())
 
+    def delete_message(self, message_id: str) -> bool:
+        """Delete a single message and its classifications."""
+        if message_id not in self._messages:
+            return False
+        del self._messages[message_id]
+        # Also delete classifications
+        if message_id in self._classifications:
+            del self._classifications[message_id]
+        if message_id in self._latest_classification:
+            del self._latest_classification[message_id]
+        return True
+
+    def delete_messages(self, message_ids: List[str]) -> int:
+        """Delete multiple messages and their classifications."""
+        deleted = 0
+        for message_id in message_ids:
+            if self.delete_message(message_id):
+                deleted += 1
+        return deleted
+
     def get_message_by_id(self, message_id: str) -> Optional[MailMessage]:
         """Get a single message by ID with its latest classification."""
         msg = self._messages.get(message_id)
@@ -316,3 +336,74 @@ class InMemoryStorage(StorageBackend):
             if msg.labels and 'UNREAD' in msg.labels:
                 count += 1
         return count
+
+    # =========================================================================
+    # OAuth Token Storage Methods (in-memory for testing)
+    # =========================================================================
+
+    def __init_oauth_storage(self):
+        """Initialize OAuth storage if not already done."""
+        if not hasattr(self, '_oauth_tokens'):
+            self._oauth_tokens: dict[str, dict] = {}
+
+    def save_oauth_tokens(
+        self,
+        email: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry,
+    ) -> None:
+        """Save OAuth tokens for a user (upsert)."""
+        self.__init_oauth_storage()
+        self._oauth_tokens[email] = {
+            "email": email,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_expiry": token_expiry,
+        }
+
+    def get_oauth_tokens(self, email: str) -> Optional[dict]:
+        """Get OAuth tokens for a user."""
+        self.__init_oauth_storage()
+        return self._oauth_tokens.get(email)
+
+    def update_access_token(self, email: str, access_token: str, token_expiry) -> None:
+        """Update only the access token (after refresh)."""
+        self.__init_oauth_storage()
+        if email in self._oauth_tokens:
+            self._oauth_tokens[email]["access_token"] = access_token
+            self._oauth_tokens[email]["token_expiry"] = token_expiry
+
+    def delete_oauth_tokens(self, email: str) -> None:
+        """Delete OAuth tokens for a user (logout)."""
+        self.__init_oauth_storage()
+        self._oauth_tokens.pop(email, None)
+
+    def is_gmail_connected(self, email: str) -> dict:
+        """Check if Gmail OAuth tokens are valid for a user."""
+        from datetime import datetime, timezone
+
+        self.__init_oauth_storage()
+        tokens = self._oauth_tokens.get(email)
+
+        if not tokens:
+            return {"connected": False, "can_refresh": False, "token_expiry": None}
+
+        token_expiry = tokens.get("token_expiry")
+        has_refresh = tokens.get("refresh_token") is not None
+        now = datetime.now(timezone.utc)
+
+        if token_expiry and token_expiry > now:
+            return {"connected": True, "can_refresh": has_refresh, "token_expiry": token_expiry}
+
+        if has_refresh:
+            return {"connected": False, "can_refresh": True, "token_expiry": token_expiry}
+
+        return {"connected": False, "can_refresh": False, "token_expiry": token_expiry}
+
+    def get_authenticated_email(self) -> Optional[str]:
+        """Get the email of any authenticated user."""
+        self.__init_oauth_storage()
+        if self._oauth_tokens:
+            return next(iter(self._oauth_tokens.keys()))
+        return None

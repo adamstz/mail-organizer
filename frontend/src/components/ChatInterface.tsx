@@ -209,7 +209,7 @@ const ChatInterface: React.FC = () => {
     setIsLoading(true);
 
     logger.info(`Sending chat query: ${inputValue}`);
-    console.log('[CHAT INTERFACE] Query parameters: top_k=5, similarity_threshold=0.3');
+    console.log('[CHAT INTERFACE] Query parameters: similarity_threshold=0.3 (top_k extracted from query)');
 
     try {
       // Create AbortController with 5 minute timeout for LLM processing
@@ -225,7 +225,6 @@ const ChatInterface: React.FC = () => {
         body: JSON.stringify({
           question: inputValue,
           chat_session_id: sessionId,
-          top_k: 5,
           similarity_threshold: 0.3,
         }),
         signal: controller.signal,

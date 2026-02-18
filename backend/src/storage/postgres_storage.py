@@ -447,6 +447,77 @@ class PostgresStorage(StorageBackend):
         cur.close()
         conn.close()
 
+    def delete_message(self, message_id: str) -> bool:
+        """Delete a single message and its related data.
+
+        Deletes the message from the messages table. Related data in
+        classifications and embeddings tables should be handled by
+        ON DELETE CASCADE constraints or explicit deletion.
+
+        Args:
+            message_id: The ID of the message to delete
+
+        Returns:
+            True if the message was deleted, False if not found
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+
+        # Delete related data first (if no CASCADE)
+        cur.execute("DELETE FROM classifications WHERE message_id = %s", (message_id,))
+        cur.execute("DELETE FROM embeddings WHERE message_id = %s", (message_id,))
+
+        # Delete the message
+        cur.execute("DELETE FROM messages WHERE id = %s", (message_id,))
+        deleted = cur.rowcount > 0
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return deleted
+
+    def delete_messages(self, message_ids: List[str]) -> int:
+        """Delete multiple messages and their related data.
+
+        Uses batch deletion for efficiency.
+
+        Args:
+            message_ids: List of message IDs to delete
+
+        Returns:
+            Number of messages actually deleted
+        """
+        if not message_ids:
+            return 0
+
+        conn = self.connect()
+        cur = conn.cursor()
+
+        # Delete email_chunks first (they reference messages via FK with CASCADE,
+        # but explicit delete is cleaner)
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'email_chunks'
+            )
+        """)
+        if cur.fetchone()[0]:
+            cur.execute("DELETE FROM email_chunks WHERE message_id = ANY(%s)", (message_ids,))
+
+        # Delete messages (they reference classifications via FK)
+        cur.execute("DELETE FROM messages WHERE id = ANY(%s)", (message_ids,))
+        deleted_count = cur.rowcount
+
+        # Then delete orphaned classification records
+        cur.execute("DELETE FROM classifications WHERE message_id = ANY(%s)", (message_ids,))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return deleted_count
+
     def save_classification_record(self, record) -> None:
         """Persist a ClassificationRecord-like object."""
         conn = self.connect()
@@ -1410,6 +1481,90 @@ class PostgresStorage(StorageBackend):
 
         return count
 
+    def list_by_topic(self, topic: str, limit: int = 500) -> Tuple[List[MailMessage], int]:
+        """List messages matching a topic, with same logic as count_by_topic.
+
+        Uses ILIKE search on subject, from_addr, and snippet fields.
+        This ensures count and list operations use identical search logic.
+
+        Args:
+            topic: The topic/keyword to search for
+            limit: Maximum number of messages to return (default 500)
+
+        Returns:
+            Tuple of (list of matching messages, total count)
+        """
+        conn = self.connect()
+        pattern = f'%{topic}%'
+
+        # First get total count
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM messages
+            WHERE subject ILIKE %s OR from_addr ILIKE %s OR snippet ILIKE %s
+            """,
+            (pattern, pattern, pattern)
+        )
+        total_count = cur.fetchone()[0]
+        cur.close()
+
+        # Then get actual messages with limit
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            SELECT id, thread_id, from_addr, to_addr, subject, snippet,
+                   labels, internal_date, has_attachments,
+                   classification_labels, priority, summary
+            FROM messages
+            WHERE subject ILIKE %s OR from_addr ILIKE %s OR snippet ILIKE %s
+            ORDER BY internal_date DESC
+            LIMIT %s
+            """,
+            (pattern, pattern, pattern, limit)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        messages = [self._row_to_mail_message(r) for r in rows]
+        return messages, total_count
+
+    def get_messages_by_ids(self, message_ids: List[str]) -> List[MailMessage]:
+        """Retrieve messages by their IDs.
+
+        Args:
+            message_ids: List of message IDs to retrieve
+
+        Returns:
+            List of MailMessage objects (preserves order of input IDs where possible)
+        """
+        if not message_ids:
+            return []
+
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Use ANY for efficient batch lookup
+        cur.execute(
+            """
+            SELECT id, thread_id, from_addr, to_addr, subject, snippet,
+                   labels, internal_date, has_attachments,
+                   classification_labels, priority, summary
+            FROM messages
+            WHERE id = ANY(%s)
+            """,
+            (message_ids,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Create a dict for O(1) lookup and preserve original order
+        messages_by_id = {r['id']: self._row_to_mail_message(r) for r in rows}
+        return [messages_by_id[mid] for mid in message_ids if mid in messages_by_id]
+
     def get_daily_email_stats(self, days: int = 30) -> List[dict]:
         """Get email count statistics per day."""
         conn = self.connect()
@@ -1769,3 +1924,197 @@ class PostgresStorage(StorageBackend):
 
         # Return as (message, score) tuples
         return [(item['message'], item['score']) for item in sorted_results]
+
+    # =========================================================================
+    # OAuth Token Storage Methods
+    # =========================================================================
+
+    def _get_encryption_key(self) -> str:
+        """Get the encryption key for token storage.
+
+        Uses JWT_SECRET as the encryption key for consistency.
+        Falls back to a default for development (not secure for production).
+        """
+        import os
+        key = os.environ.get("JWT_SECRET")
+        if not key:
+            # Development fallback - log warning
+            import logging
+            logging.warning(
+                "JWT_SECRET not set - using insecure default for token encryption. "
+                "Set JWT_SECRET environment variable for production."
+            )
+            key = "dev_insecure_default_key_change_me"
+        return key
+
+    def save_oauth_tokens(
+        self,
+        email: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry,
+    ) -> None:
+        """Save OAuth tokens for a user (upsert) with encryption."""
+        conn = self.connect()
+        cur = conn.cursor()
+        encryption_key = self._get_encryption_key()
+
+        try:
+            # Use pgp_sym_encrypt for column-level encryption
+            cur.execute(
+                """
+                INSERT INTO oauth_tokens (email, access_token, refresh_token, token_expiry)
+                VALUES (
+                    %s,
+                    pgp_sym_encrypt(%s, %s),
+                    pgp_sym_encrypt(%s, %s),
+                    %s
+                )
+                ON CONFLICT (email) DO UPDATE SET
+                    access_token = pgp_sym_encrypt(%s, %s),
+                    refresh_token = pgp_sym_encrypt(%s, %s),
+                    token_expiry = %s,
+                    updated_at = NOW()
+                """,
+                (
+                    email,
+                    access_token, encryption_key,
+                    refresh_token, encryption_key,
+                    token_expiry,
+                    access_token, encryption_key,
+                    refresh_token, encryption_key,
+                    token_expiry,
+                ),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def get_oauth_tokens(self, email: str):
+        """Get decrypted OAuth tokens for a user."""
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        encryption_key = self._get_encryption_key()
+
+        try:
+            cur.execute(
+                """
+                SELECT
+                    email,
+                    pgp_sym_decrypt(access_token, %s) as access_token,
+                    pgp_sym_decrypt(refresh_token, %s) as refresh_token,
+                    token_expiry
+                FROM oauth_tokens
+                WHERE email = %s
+                """,
+                (encryption_key, encryption_key, email),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "email": row["email"],
+                "access_token": row["access_token"],
+                "refresh_token": row["refresh_token"],
+                "token_expiry": row["token_expiry"],
+            }
+        finally:
+            cur.close()
+            conn.close()
+
+    def update_access_token(self, email: str, access_token: str, token_expiry) -> None:
+        """Update only the access token after refresh."""
+        conn = self.connect()
+        cur = conn.cursor()
+        encryption_key = self._get_encryption_key()
+
+        try:
+            cur.execute(
+                """
+                UPDATE oauth_tokens
+                SET
+                    access_token = pgp_sym_encrypt(%s, %s),
+                    token_expiry = %s,
+                    updated_at = NOW()
+                WHERE email = %s
+                """,
+                (access_token, encryption_key, token_expiry, email),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def delete_oauth_tokens(self, email: str) -> None:
+        """Delete OAuth tokens for a user (logout)."""
+        conn = self.connect()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("DELETE FROM oauth_tokens WHERE email = %s", (email,))
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+    def is_gmail_connected(self, email: str) -> dict:
+        """Check if Gmail OAuth tokens are valid for a user.
+
+        Returns a dict with:
+        - connected: bool - True if valid non-expired tokens exist
+        - can_refresh: bool - True if expired but has refresh token
+        - token_expiry: datetime or None - When the access token expires
+        """
+        conn = self.connect()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            cur.execute(
+                """
+                SELECT token_expiry, refresh_token IS NOT NULL as has_refresh
+                FROM oauth_tokens
+                WHERE email = %s
+                """,
+                (email,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return {"connected": False, "can_refresh": False, "token_expiry": None}
+
+            token_expiry = row["token_expiry"]
+            has_refresh = row["has_refresh"]
+            now = datetime.now(timezone.utc)
+
+            # Check if token is still valid (with 5 min buffer)
+            if token_expiry and token_expiry > now:
+                return {"connected": True, "can_refresh": has_refresh, "token_expiry": token_expiry}
+
+            # Token expired but can be refreshed
+            if has_refresh:
+                return {"connected": False, "can_refresh": True, "token_expiry": token_expiry}
+
+            # Token expired and no refresh token
+            return {"connected": False, "can_refresh": False, "token_expiry": token_expiry}
+        finally:
+            cur.close()
+            conn.close()
+
+    def get_authenticated_email(self):
+        """Get the email of any authenticated user.
+
+        For single-user deployments, returns the first email found.
+        """
+        conn = self.connect()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("SELECT email FROM oauth_tokens LIMIT 1")
+            row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            cur.close()
+            conn.close()

@@ -102,10 +102,20 @@ Key behaviours and defaults (verify in code):
 File: `backend/src/services/rag_engine.py`
 
 - Workflow: user question → classify query type → route to handler → handler processes and returns response.
-- Query types supported: conversation, aggregation, search-by-sender, search-by-attachment, classification, temporal, filtered-temporal, semantic.
+- Query types supported: conversation, aggregation, search-by-sender, search-by-attachment, classification, temporal, filtered-temporal, semantic, list-previous-results.
 - Uses `QueryClassifier` to detect query type, then delegates to specialized handlers in `backend/src/services/query_handlers/`.
-- Handlers: `ConversationHandler`, `AggregationHandler`, `SenderHandler`, `AttachmentHandler`, `ClassificationHandler`, `TemporalHandler`, `SemanticHandler`.
+- Handlers: `ConversationHandler`, `AggregationHandler`, `SenderHandler`, `AttachmentHandler`, `ClassificationHandler`, `TemporalHandler`, `SemanticHandler`, `PreviousResultsHandler`.
 - Each handler uses `ContextBuilder` to format email data and `LLMProcessor` to generate natural language responses.
+
+**Result Caching for Follow-up Queries:**
+
+The RAG engine caches query results to enable follow-up queries like "list those 78 emails":
+
+- **File**: `backend/src/services/result_cache.py`
+- **Cache**: In-memory LRU cache (100 sessions max, 30-minute TTL, 500 message IDs per result)
+- **Detection**: `QueryClassifier._is_list_previous_request()` detects patterns like "list those", "show them"
+- **Handler**: `PreviousResultsHandler` retrieves cached message IDs and fetches full details
+- **Structured Types**: `backend/src/models/query_response.py` defines `QueryResponse` Pydantic model with `cached_message_ids` field
 
 **Retrieval Strategy (Industry-Standard Hybrid Search):**
 
@@ -114,13 +124,13 @@ The semantic search handler implements state-of-the-art retrieval combining:
 1. **Hybrid Search (Vector + Keyword)**
    - Combines semantic vector search (pgvector) with PostgreSQL full-text search (tsvector/BM25-like)
    - Uses Reciprocal Rank Fusion (RRF) to merge ranked results from both methods
-   - Default weights: 60% vector, 40% keyword (configurable)
+   - Default weights: 50% vector, 50% keyword (balanced for exact keyword matching)
    - Retrieves 50 candidates from each method before fusion
 
 2. **Cross-Encoder Reranking**
    - Reranks top-50 hybrid results using `cross-encoder/ms-marco-MiniLM-L-6-v2`
    - More accurate relevance scoring than bi-encoder embeddings
-   - Returns final top-5 results to LLM for answer generation
+   - Returns final top-20 results to LLM for answer generation
 
 3. **Full Email Context**
    - Context builder uses full email body (up to 2000 chars per email) instead of snippet
@@ -128,9 +138,11 @@ The semantic search handler implements state-of-the-art retrieval combining:
    - Auto-truncates long emails to stay within context windows
 
 Implementation files:
-- Hybrid search: `backend/src/storage/postgres_storage.py` (methods: `keyword_search`, `hybrid_search`)
+- Hybrid search: `backend/src/storage/postgres_storage.py` (methods: `keyword_search`, `hybrid_search`, `list_by_topic`, `get_messages_by_ids`)
 - Reranking: `backend/src/services/query_handlers/semantic.py` (method: `_rerank_results`)
 - Context assembly: `backend/src/services/context_builder.py` (uses `message.get_body_text()`)
+- Result caching: `backend/src/services/result_cache.py` (LRU cache for follow-up queries)
+- Structured types: `backend/src/models/query_response.py` (Pydantic model for responses)
 
 ---
 
@@ -204,7 +216,7 @@ uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
 ```bash
 curl -X POST http://127.0.0.1:8000/api/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"What invoices did I receive last month?","top_k":5}' | jq
+  -d '{"question":"What invoices did I receive last month?","top_k":10}' | jq
 ```
 
 - Start a background classify job via the API's sync endpoint (runs in background manager):
@@ -233,11 +245,52 @@ The `LLMProcessor` reads configuration from environment variables. Key variables
 - `ORGANIZE_MAIL_LLM_CMD` — external command to call for `command` provider
 - `LLM_MODEL` — override model name (defaults vary by provider)
 
+Authentication variables (for OAuth flow):
+- `JWT_SECRET` — **Required.** Secret key for signing JWT tokens. Generate with `openssl rand -hex 32`
+- `GOOGLE_CLIENT_ID` — **Required.** OAuth client ID from GCP Console
+- `GOOGLE_CLIENT_SECRET` — **Required.** OAuth client secret from GCP Console
+- `ALLOWED_EMAIL` — Optional. Restrict authentication to a specific Gmail address (recommended for self-hosted)
+- `BACKEND_URL` — Optional. Backend base URL (default: `http://localhost:8000`)
+- `FRONTEND_URL` — Optional. Frontend URL for redirects after OAuth (default: `http://localhost:5173`)
+- `OAUTH_REDIRECT_URI` — Optional. Override the OAuth callback URL (default: `{BACKEND_URL}/api/auth/callback`)
+- `CORS_ORIGINS` — Optional. Comma-separated list of allowed CORS origins (default: includes FRONTEND_URL and localhost variants)
+- `SECURE_COOKIES` — Optional. Set to `true` for HTTPS deployments
+
+**OAuth Token Management:**
+
+The system implements intelligent token management to minimize unnecessary OAuth flows:
+
+1. **Token Checking**: Before redirecting to Google OAuth, the `/api/auth/login` endpoint checks for:
+   - Valid JWT session cookie AND valid Gmail tokens (if present, redirects immediately)
+   - Valid OAuth tokens in database (if present and not expired, creates JWT session)
+   - Expired OAuth tokens with refresh token (automatically refreshes and creates session)
+   - Valid JWT but expired Gmail tokens (redirects to OAuth for reconnection)
+
+2. **Automatic Token Refresh**: When OAuth tokens expire, the system automatically uses the refresh token to obtain new access tokens without requiring user interaction. This happens in two places:
+   - `/api/auth/status` — attempts refresh when checking Gmail connection status
+   - `/api/auth/login` — attempts refresh before redirecting to OAuth
+
+3. **Gmail Connection Status**: The `/api/auth/status` endpoint returns:
+   - `authenticated`: Whether user has valid JWT session
+   - `gmail_connected`: Whether valid OAuth tokens exist (separate from JWT)
+   
+4. **Force OAuth Flow**: Use `/api/auth/login?force=true` to bypass all checks and go directly to Google OAuth. This is used when reconnecting Gmail after token revocation.
+
+5. **Frontend Reconnection UI**: When `gmail_connected` is false:
+   - SyncStatus shows "Gmail: Not Connected" chip in error color
+   - Clicking the chip shows a centered login page with "Reconnect Gmail" title
+   - User can cancel and return to the app, or proceed to reconnect
+
+6. **Graceful Fallback**: If token refresh fails or no tokens exist, the system falls back to the full OAuth consent flow.
+
+This approach significantly reduces friction for returning users while maintaining security.
+
 Other service variables (used by storage/RAG):
 - DB connection details (set in the environment or storage config)
 - `PGVECTOR` and `pgvector` extension — required for RAG/embedding search in Postgres
 
 For complete configuration details and query pipeline documentation, see `docs/QUERY_FLOW.md`.
+For authentication setup details, see `docs/AUTH_IMPLEMENTATION_PLAN.md`.
 
 Provider examples (copy/paste)
 

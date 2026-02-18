@@ -11,6 +11,8 @@ import time
 import uuid
 import pytest
 
+pytestmark = pytest.mark.integration
+
 # Add parent directory to path for standalone execution
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 

@@ -11,6 +11,7 @@ import {
   Snackbar,
   Alert,
   Tooltip,
+  Checkbox,
 } from '@mui/material';
 import {
   Delete as DeleteIcon,
@@ -44,9 +45,11 @@ interface EmailItemProps {
   onDelete: (id: string) => void;
   onReclassify?: (id: string) => void;
   selectedModel?: string;
+  isSelected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
-const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDelete, onReclassify, selectedModel = 'gemma:2b' }) => {
+const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDelete, onReclassify, selectedModel = 'gemma:2b', isSelected = false, onToggleSelect }) => {
   const [isReclassifying, setIsReclassifying] = useState(false);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -142,7 +145,7 @@ const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDe
           '&:hover': { backgroundColor: 'action.hover' },
           borderBottom: '1px solid',
           borderColor: 'divider',
-          bgcolor: 'background.paper',
+          bgcolor: isSelected ? 'action.selected' : 'background.paper',
           mb: 2,
           borderRadius: 1,
           p: 2,
@@ -151,6 +154,17 @@ const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDe
           alignItems: 'center',
         }}
       >
+        {onToggleSelect && (
+          <Checkbox
+            checked={isSelected}
+            onChange={(e) => {
+              e.stopPropagation();
+              onToggleSelect(email.id);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            sx={{ mr: 1 }}
+          />
+        )}
         <Box sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
           <Box
             sx={{
@@ -164,8 +178,12 @@ const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDe
           >
             <ListItemText
               primary={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                  <Typography variant="subtitle1">{email.subject}</Typography>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                    {email.from}
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                    <Typography variant="subtitle1">{email.subject}</Typography>
                   <Chip
                     label={email.priority}
                     size="small"
@@ -184,6 +202,7 @@ const EmailItem: React.FC<EmailItemProps> = ({ email, isExpanded, onExpand, onDe
                       ))}
                     </>
                   )}
+                  </Box>
                 </Box>
               }
               secondary={
