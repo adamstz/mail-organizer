@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import os
 import logging
+import secrets
+import json
+import base64
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -122,6 +125,48 @@ def get_google_auth_url(state: Optional[str] = None) -> tuple[str, str]:
 
     logger.info(f"Generated OAuth URL using Google SDK")
     return auth_url, returned_state
+
+
+def generate_oauth_state(redirect_url: Optional[str] = None) -> tuple[str, str]:
+    """Generate a CSRF-protected OAuth state parameter.
+
+    Encodes a random nonce and optional redirect URL into a base64 JSON string.
+    The nonce should be stored in an httponly cookie and verified on callback.
+
+    Args:
+        redirect_url: Optional URL to redirect to after successful auth
+
+    Returns:
+        Tuple of (state_param_for_google, nonce_for_cookie)
+    """
+    nonce = secrets.token_urlsafe(32)
+    payload: dict = {"nonce": nonce}
+    if redirect_url:
+        payload["redirect_url"] = redirect_url
+    state = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+    return state, nonce
+
+
+def verify_oauth_state(state: str, expected_nonce: str) -> tuple[bool, Optional[str]]:
+    """Verify the CSRF nonce in the OAuth state and extract the redirect URL.
+
+    Args:
+        state: The state parameter returned from Google (base64 JSON)
+        expected_nonce: The nonce stored in the httponly cookie
+
+    Returns:
+        Tuple of (is_valid, redirect_url). redirect_url may be None.
+    """
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(state))
+        nonce = payload.get("nonce", "")
+        if not secrets.compare_digest(nonce, expected_nonce):
+            logger.warning("CSRF state nonce mismatch")
+            return False, None
+        return True, payload.get("redirect_url")
+    except Exception as e:
+        logger.warning(f"Failed to decode OAuth state: {e}")
+        return False, None
 
 
 async def exchange_code_for_tokens(code: str, state: Optional[str] = None) -> Credentials:

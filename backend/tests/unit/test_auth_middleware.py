@@ -189,7 +189,7 @@ class TestCookieHelpers:
         
         clear_auth_cookie(mock_response)
         
-        mock_response.delete_cookie.assert_called_once()
-        call_kwargs = mock_response.delete_cookie.call_args[1]
-        
-        assert call_kwargs["key"] == JWT_COOKIE_NAME
+        # Called twice: once for the main cookie, once for stale domain=localhost
+        assert mock_response.delete_cookie.call_count == 2
+        first_call = mock_response.delete_cookie.call_args_list[0]
+        assert first_call[1]["key"] == JWT_COOKIE_NAME

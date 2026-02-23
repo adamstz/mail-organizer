@@ -261,14 +261,14 @@ Authentication variables (for OAuth flow):
 The system implements intelligent token management to minimize unnecessary OAuth flows:
 
 1. **Token Checking**: Before redirecting to Google OAuth, the `/api/auth/login` endpoint checks for:
-   - Valid JWT session cookie AND valid Gmail tokens (if present, redirects immediately)
-   - Valid OAuth tokens in database (if present and not expired, creates JWT session)
-   - Expired OAuth tokens with refresh token (automatically refreshes and creates session)
-   - Valid JWT but expired Gmail tokens (redirects to OAuth for reconnection)
+   - Valid JWT session cookie AND valid Gmail tokens (if present, redirects immediately to frontend)
+   - Valid JWT session but Gmail disconnected (redirects to OAuth to reconnect Gmail)
+   - No valid JWT session (always redirects to OAuth for identity verification)
 
-2. **Automatic Token Refresh**: When OAuth tokens expire, the system automatically uses the refresh token to obtain new access tokens without requiring user interaction. This happens in two places:
+   **Security**: Unauthenticated requests (no JWT cookie) always go through Google OAuth to verify identity. The system never auto-creates sessions from database tokens without verified identity.
+
+2. **Automatic Token Refresh**: When OAuth tokens expire but the user has a valid JWT session, the system automatically uses the refresh token to obtain new access tokens without requiring user interaction. This happens in:
    - `/api/auth/status` — attempts refresh when checking Gmail connection status
-   - `/api/auth/login` — attempts refresh before redirecting to OAuth
 
 3. **Gmail Connection Status**: The `/api/auth/status` endpoint returns:
    - `authenticated`: Whether user has valid JWT session

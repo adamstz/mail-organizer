@@ -56,9 +56,14 @@ class TestAuthEndpoints:
         assert "accounts.google.com" in location
         assert "client_id=" in location
 
+        # Verify CSRF state cookie is set
+        assert "oauth_state" in response.cookies
+
     def test_auth_login_with_redirect_url(self, client):
-        """Test login preserves redirect URL in state."""
-        from urllib.parse import unquote
+        """Test login preserves redirect URL in CSRF-protected state."""
+        import json
+        import base64
+        from urllib.parse import urlparse, parse_qs
         
         redirect_url = "http://localhost:5173/dashboard"
         response = client.get(
@@ -68,8 +73,48 @@ class TestAuthEndpoints:
         
         assert response.status_code == 307
         location = response.headers.get("location", "")
-        # Redirect URL will be URL-encoded in the state parameter
-        assert redirect_url in unquote(location)
+        assert "accounts.google.com" in location
+
+        # Decode the state parameter and verify redirect_url is inside
+        parsed = urlparse(location)
+        params = parse_qs(parsed.query)
+        state = params.get("state", [None])[0]
+        assert state is not None
+        payload = json.loads(base64.urlsafe_b64decode(state))
+        assert payload["redirect_url"] == redirect_url
+        assert "nonce" in payload
+
+    def test_auth_login_unauthenticated_with_db_tokens_redirects_to_oauth(self, client):
+        """Test that unauthenticated users are redirected to OAuth even when DB has valid tokens.
+        
+        Security test: Verifies that /api/auth/login never auto-creates sessions from
+        database tokens without verified identity (JWT). This prevents an incognito/
+        unauthenticated user from being auto-signed in.
+        """
+        from src import storage
+        from datetime import datetime, timedelta, timezone
+        
+        # Simulate tokens in DB from a previous session
+        email = "authenticated-user@gmail.com"
+        future_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        storage.save_oauth_tokens(
+            email=email,
+            access_token="valid_access_token",
+            refresh_token="valid_refresh_token",
+            token_expiry=future_expiry,
+        )
+        
+        # Make request without JWT cookie (unauthenticated)
+        response = client.get("/api/auth/login", follow_redirects=False)
+        
+        # Should redirect to Google OAuth (NOT auto-login)
+        assert response.status_code == 307
+        location = response.headers.get("location", "")
+        assert "accounts.google.com" in location
+        assert "client_id=" in location
+        
+        # Should NOT set auth cookie
+        assert "auth_token" not in response.cookies
 
     def test_auth_logout_clears_cookie(self, client):
         """Test logout clears auth cookie."""
@@ -115,7 +160,11 @@ class TestAuthCallbackFlow:
     async def test_auth_callback_success(self, client):
         """Test successful OAuth callback stores tokens and sets cookie."""
         from datetime import datetime, timedelta, timezone
+        from src.auth.oauth import generate_oauth_state
         
+        # Generate a valid CSRF state + nonce
+        state, nonce = generate_oauth_state()
+
         # Mock the Google SDK Flow and Credentials
         mock_credentials = MagicMock()
         mock_credentials.token = "mock_access_token"
@@ -129,7 +178,8 @@ class TestAuthCallbackFlow:
         
         with patch("src.auth.oauth._create_flow", return_value=mock_flow):
             response = client.get(
-                "/api/auth/callback?code=test_auth_code",
+                f"/api/auth/callback?code=test_auth_code&state={state}",
+                cookies={"oauth_state": nonce},
                 follow_redirects=False
             )
         
@@ -139,6 +189,37 @@ class TestAuthCallbackFlow:
         # Should set auth cookie
         cookies = response.cookies
         assert "auth_token" in cookies or "set-cookie" in response.headers
+
+    @pytest.mark.asyncio
+    async def test_auth_callback_rejects_missing_csrf_state(self, client):
+        """Test callback rejects requests without CSRF state."""
+        response = client.get(
+            "/api/auth/callback?code=test_auth_code",
+            follow_redirects=False
+        )
+        
+        # Should redirect to frontend with error
+        assert response.status_code == 302
+        location = response.headers.get("location", "")
+        assert "auth_error" in location
+
+    @pytest.mark.asyncio
+    async def test_auth_callback_rejects_wrong_csrf_nonce(self, client):
+        """Test callback rejects requests with mismatched CSRF nonce."""
+        from src.auth.oauth import generate_oauth_state
+
+        state, _nonce = generate_oauth_state()
+
+        response = client.get(
+            f"/api/auth/callback?code=test_auth_code&state={state}",
+            cookies={"oauth_state": "wrong_nonce"},
+            follow_redirects=False
+        )
+
+        # Should redirect to frontend with error
+        assert response.status_code == 302
+        location = response.headers.get("location", "")
+        assert "auth_error" in location
 
     def test_auth_callback_without_code_fails(self, client):
         """Test callback fails without authorization code."""

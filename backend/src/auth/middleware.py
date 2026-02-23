@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 7
 JWT_COOKIE_NAME = "auth_token"
+OAUTH_STATE_COOKIE_NAME = "oauth_state"
 
 
 @dataclass
@@ -96,8 +97,9 @@ def set_auth_cookie(response: Response, token: str) -> None:
     # Use secure settings appropriate for self-hosted
     # In production behind HTTPS, set secure=True
     is_secure = os.environ.get("SECURE_COOKIES", "false").lower() == "true"
+    cookie_domain = os.environ.get("COOKIE_DOMAIN")  # Optional: set for multi-subdomain deployments
 
-    response.set_cookie(
+    kwargs: dict = dict(
         key=JWT_COOKIE_NAME,
         value=token,
         httponly=True,  # Prevent JavaScript access
@@ -105,8 +107,14 @@ def set_auth_cookie(response: Response, token: str) -> None:
         samesite="lax",  # CSRF protection
         max_age=JWT_EXPIRY_DAYS * 24 * 60 * 60,  # Seconds
         path="/",
-        domain="localhost",  # Share cookie across ports (5173 and 8000)
     )
+    # Only set domain if explicitly configured; omitting lets the browser
+    # scope the cookie to the exact origin host, which works for both
+    # localhost dev and single-origin production deployments.
+    if cookie_domain:
+        kwargs["domain"] = cookie_domain
+
+    response.set_cookie(**kwargs)
 
 
 def clear_auth_cookie(response: Response) -> None:
@@ -115,11 +123,51 @@ def clear_auth_cookie(response: Response) -> None:
     Args:
         response: FastAPI Response object
     """
-    response.delete_cookie(
+    cookie_domain = os.environ.get("COOKIE_DOMAIN")
+    kwargs: dict = dict(
         key=JWT_COOKIE_NAME,
         path="/",
-        domain="localhost",  # Must match domain used in set_auth_cookie
     )
+    if cookie_domain:
+        kwargs["domain"] = cookie_domain
+
+    response.delete_cookie(**kwargs)
+
+    # Also clear any stale cookie that was previously set with domain="localhost"
+    # so that users who upgrade don't get stuck with an old cookie.
+    if cookie_domain != "localhost":
+        response.delete_cookie(
+            key=JWT_COOKIE_NAME,
+            path="/",
+            domain="localhost",
+        )
+
+
+def set_oauth_state_cookie(response: Response, nonce: str) -> None:
+    """Set the one-time OAuth CSRF state cookie.
+
+    This cookie stores the nonce that must match the state parameter
+    returned from Google in the OAuth callback.
+
+    Args:
+        response: FastAPI Response object
+        nonce: Random nonce string
+    """
+    is_secure = os.environ.get("SECURE_COOKIES", "false").lower() == "true"
+    response.set_cookie(
+        key=OAUTH_STATE_COOKIE_NAME,
+        value=nonce,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=600,  # 10 minutes — OAuth flow should complete quickly
+        path="/",
+    )
+
+
+def clear_oauth_state_cookie(response: Response) -> None:
+    """Clear the OAuth CSRF state cookie after verification."""
+    response.delete_cookie(key=OAUTH_STATE_COOKIE_NAME, path="/")
 
 
 async def get_current_user(request: Request) -> Optional[AuthenticatedUser]:
