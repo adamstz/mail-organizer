@@ -31,6 +31,7 @@ class FrontendLogger {
     switch (level) {
       case 'debug':
         console.debug(prefix, message, ...args);
+        this.sendToBackend(level, message);
         break;
       case 'info':
         console.info(prefix, message, ...args);

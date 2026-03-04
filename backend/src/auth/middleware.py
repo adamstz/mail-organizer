@@ -63,7 +63,9 @@ def create_jwt_token(email: str) -> str:
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS),
     }
 
-    return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+    token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+    logger.info(f"[Auth] Created JWT token for {email} (expires in {JWT_EXPIRY_DAYS} days)")
+    return token
 
 
 def decode_jwt_token(token: str) -> Optional[str]:
@@ -78,12 +80,14 @@ def decode_jwt_token(token: str) -> Optional[str]:
     try:
         secret = get_jwt_secret()
         payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
-        return payload.get("sub")
+        email = payload.get("sub")
+        logger.debug(f"[Auth] JWT decoded successfully — sub={email}")
+        return email
     except jwt.ExpiredSignatureError:
-        logger.debug("JWT token has expired")
+        logger.debug("[Auth] JWT token has expired")
         return None
     except jwt.InvalidTokenError as e:
-        logger.debug(f"Invalid JWT token: {e}")
+        logger.debug(f"[Auth] Invalid JWT token: {e}")
         return None
 
 
@@ -115,6 +119,7 @@ def set_auth_cookie(response: Response, token: str) -> None:
         kwargs["domain"] = cookie_domain
 
     response.set_cookie(**kwargs)
+    logger.debug(f"[Auth] Set auth cookie (secure={is_secure}, domain={cookie_domain or 'auto'}, max_age={JWT_EXPIRY_DAYS}d)")
 
 
 def clear_auth_cookie(response: Response) -> None:
@@ -132,6 +137,7 @@ def clear_auth_cookie(response: Response) -> None:
         kwargs["domain"] = cookie_domain
 
     response.delete_cookie(**kwargs)
+    logger.debug(f"[Auth] Cleared auth cookie (domain={cookie_domain or 'auto'})")
 
     # Also clear any stale cookie that was previously set with domain="localhost"
     # so that users who upgrade don't get stuck with an old cookie.
@@ -163,11 +169,13 @@ def set_oauth_state_cookie(response: Response, nonce: str) -> None:
         max_age=600,  # 10 minutes — OAuth flow should complete quickly
         path="/",
     )
+    logger.debug(f"[Auth] Set OAuth state cookie (nonce={nonce[:8]}..., max_age=600s)")
 
 
 def clear_oauth_state_cookie(response: Response) -> None:
     """Clear the OAuth CSRF state cookie after verification."""
     response.delete_cookie(key=OAUTH_STATE_COOKIE_NAME, path="/")
+    logger.debug("[Auth] Cleared OAuth state cookie")
 
 
 async def get_current_user(request: Request) -> Optional[AuthenticatedUser]:
@@ -185,13 +193,16 @@ async def get_current_user(request: Request) -> Optional[AuthenticatedUser]:
     token = request.cookies.get(JWT_COOKIE_NAME)
 
     if not token:
+        logger.debug("[Auth] No JWT cookie present in request")
         return None
 
     email = decode_jwt_token(token)
 
     if not email:
+        logger.debug("[Auth] JWT cookie present but decode failed")
         return None
 
+    logger.debug(f"[Auth] Authenticated user from JWT: {email}")
     return AuthenticatedUser(email=email)
 
 
@@ -213,8 +224,10 @@ async def require_auth(
         HTTPException: 401 if not authenticated
     """
     if not user:
+        logger.debug("[Auth] require_auth: no authenticated user — returning 401")
         raise HTTPException(
             status_code=401,
             detail="Not authenticated. Please log in.",
         )
+    logger.debug(f"[Auth] require_auth: user {user.email} authorized")
     return user

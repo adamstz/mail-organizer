@@ -118,11 +118,28 @@ console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 
+# File handler — writes all logs to disk for LLM visibility (only when DEBUG_LOG=1)
+if os.environ.get("DEBUG_LOG") == "1":
+    _log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    file_handler = logging.FileHandler(
+        os.path.join(_log_dir, "app.log"),
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+else:
+    file_handler = None
+
 # Add handlers to root logger and uvicorn logger
 logging.getLogger().addHandler(log_handler)
 logging.getLogger().addHandler(console_handler)
 logging.getLogger("uvicorn").addHandler(log_handler)
 logging.getLogger("uvicorn.access").addHandler(log_handler)
+if file_handler:
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger("uvicorn").addHandler(file_handler)
+    logging.getLogger("uvicorn.access").addHandler(file_handler)
 
 # Set root logger level
 logging.getLogger().setLevel(logging.INFO)
@@ -143,17 +160,30 @@ async def health():
 # =============================================================================
 
 
-def _create_oauth_redirect(redirect_url: Optional[str] = None) -> RedirectResponse:
+def _create_oauth_redirect(
+    redirect_url: Optional[str] = None,
+    prompt: str = "consent",
+) -> RedirectResponse:
     """Create a redirect to Google OAuth with CSRF state protection.
 
     Generates a random nonce, encodes it (along with the redirect URL) into
     the OAuth state parameter, and sets the nonce in an httponly cookie so
     it can be verified when the callback arrives.
+
+    Args:
+        redirect_url: Optional URL to return to after auth completes.
+        prompt: OAuth prompt value. ``"consent"`` forces the full consent screen
+            and guarantees a new refresh token. ``"select_account"`` shows only
+            the account picker — use when a refresh token already exists in DB.
     """
+    logger.info(f"[OAuth] Creating OAuth redirect (redirect_url={redirect_url or 'none'}, prompt={prompt})")
     state, nonce = generate_oauth_state(redirect_url)
-    auth_url, _ = get_google_auth_url(state=state)
+    logger.debug(f"[OAuth] Generated CSRF state for redirect")
+    auth_url, _ = get_google_auth_url(state=state, prompt=prompt)
+    logger.debug(f"[OAuth] Got Google auth URL, creating redirect response")
     response = RedirectResponse(url=auth_url)
     set_oauth_state_cookie(response, nonce)
+    logger.info(f"[OAuth] Redirecting to Google OAuth ({prompt})")
     return response
 
 
@@ -166,48 +196,77 @@ async def auth_login(
     """Redirect to Google OAuth consent screen or skip if already authenticated.
 
     This endpoint checks for existing authentication before redirecting to Google:
-    1. If force=true → always redirect to Google OAuth (for reconnecting Gmail)
-    2. If user has valid JWT session AND valid Gmail tokens → redirect to frontend
-    3. If user has valid JWT session but Gmail disconnected → redirect to OAuth
-    4. If no valid JWT session → redirect to Google OAuth consent screen
+    1. If force=true → always redirect with prompt=consent (reconnect / revoke flow)
+    2. If user has valid JWT session AND valid Gmail tokens → redirect to frontend immediately
+    3. If user has valid JWT session but Gmail disconnected:
+       - if a refresh token exists in DB → prompt=select_account (skip consent screen)
+       - otherwise → prompt=consent (first-time or revoked)
+    4. If no valid JWT session → prompt=select_account by default (account picker only;
+       consent was already granted in a previous session)
 
     Security: Unauthenticated requests (no JWT) always go through Google OAuth to verify
     identity. We never auto-create sessions from database tokens without verified identity.
 
     Args:
         redirect_url: Optional URL to redirect to after successful auth (stored in state)
-        force: If true, bypass JWT check and force OAuth flow (for reconnecting Gmail)
+        force: If true, bypass JWT check and force full consent OAuth flow
         user: Current authenticated user (if any)
     """
-    logger.info(f"Starting OAuth login flow (force={force})")
+    logger.info(f"[OAuth] === Login endpoint hit (force={force}, user={'authenticated: ' + user.email if user else 'none'}) ===")
 
     try:
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         target_redirect = redirect_url or frontend_url
 
-        # If force=true, skip all checks and go straight to OAuth
+        # If force=true, skip all checks and go straight to full OAuth consent
         if force:
-            logger.info("Force OAuth flow requested, redirecting to Google OAuth")
-            return _create_oauth_redirect(redirect_url)
+            logger.info("[OAuth] Force OAuth flow requested — using prompt=consent")
+            return _create_oauth_redirect(redirect_url, prompt="consent")
 
         # Check if user already has a valid JWT session AND valid Gmail tokens
         if user:
+            logger.info(f"[OAuth] User {user.email} has valid JWT, checking Gmail token status")
             gmail_status = storage.is_gmail_connected(user.email)
             if gmail_status["connected"]:
-                logger.info(f"User {user.email} has valid JWT and Gmail tokens, redirecting to frontend")
+                logger.info(f"[OAuth] User {user.email} has valid JWT + Gmail tokens — redirecting to frontend")
                 return RedirectResponse(url=target_redirect, status_code=302)
             else:
-                # User has JWT but Gmail is disconnected - need OAuth
-                logger.info(f"User {user.email} has valid JWT but Gmail disconnected, redirecting to OAuth")
-                return _create_oauth_redirect(redirect_url)
+                # JWT valid but Gmail disconnected. Use select_account if we still have
+                # a stored refresh token so Google skips the consent screen.
+                existing_tokens = storage.get_oauth_tokens(user.email)
+                if existing_tokens and existing_tokens.get("refresh_token"):
+                    logger.info(f"[OAuth] User {user.email}: JWT valid, refresh token in DB — using prompt=select_account")
+                    return _create_oauth_redirect(redirect_url, prompt="select_account")
+                else:
+                    logger.info(f"[OAuth] User {user.email}: JWT valid, no refresh token — using prompt=consent")
+                    return _create_oauth_redirect(redirect_url, prompt="consent")
 
-        # No valid JWT session - must authenticate through Google OAuth
-        # Security: We never auto-create sessions from DB tokens without verified identity (JWT)
-        logger.info("No valid JWT session, redirecting to Google OAuth consent screen")
-        return _create_oauth_redirect(redirect_url)
+        # No valid JWT session - must authenticate through Google OAuth to verify identity.
+        # Check if we already have a refresh token stored for any known user.
+        # If yes, select_account is safe (Google returns a new access token, we reuse the DB refresh token).
+        # If no refresh token exists (first login, after DB wipe, after revocation), we MUST use
+        # prompt=consent so Google issues a fresh refresh token — otherwise the callback will fail.
+        existing_email = storage.get_authenticated_email()
+        if existing_email:
+            existing_tokens = storage.get_oauth_tokens(existing_email)
+            if existing_tokens and existing_tokens.get("refresh_token"):
+                logger.info(
+                    f"[OAuth] No valid JWT session — found existing refresh token for {existing_email}, "
+                    "using prompt=select_account"
+                )
+                return _create_oauth_redirect(redirect_url, prompt="select_account")
+            else:
+                logger.info(
+                    f"[OAuth] No valid JWT session — user {existing_email} has no stored refresh token, "
+                    "using prompt=consent to obtain one"
+                )
+                return _create_oauth_redirect(redirect_url, prompt="consent")
+        else:
+            logger.info("[OAuth] No valid JWT session and no existing user — using prompt=consent for first-time auth")
+            return _create_oauth_redirect(redirect_url, prompt="consent")
 
     except ValueError as e:
-        logger.error(f"OAuth configuration error: {e}")
+        logger.error(f"[OAuth] Login endpoint configuration error: {e}")
         raise HTTPException(
             status_code=500,
             detail=str(e)
@@ -225,61 +284,97 @@ async def auth_callback(
     Verifies the CSRF state nonce, exchanges the authorization code for
     tokens, stores them, and sets a JWT cookie for the session.
     """
-    logger.info("Received OAuth callback")
+    logger.info("[OAuth] === Callback endpoint hit ===")
 
     try:
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
         # --- CSRF state verification ---
         nonce_cookie = request.cookies.get(OAUTH_STATE_COOKIE_NAME)
+        logger.debug(
+            f"[OAuth] CSRF check — state={'present' if state else 'MISSING'}, "
+            f"nonce_cookie={'present' if nonce_cookie else 'MISSING'}"
+        )
         if not state or not nonce_cookie:
+            logger.error("[OAuth] Missing OAuth CSRF state or nonce cookie")
             raise ValueError(
                 "Missing OAuth CSRF state — please try logging in again"
             )
 
         is_valid, redirect_url_from_state = verify_oauth_state(state, nonce_cookie)
         if not is_valid:
+            logger.error("[OAuth] CSRF state verification failed")
             raise ValueError(
                 "Invalid OAuth state (possible CSRF) — please try again"
             )
+        logger.info("[OAuth] CSRF state verification passed")
 
         # Exchange code for tokens (returns Credentials object from Google SDK)
+        logger.info("[OAuth] Exchanging authorization code for tokens...")
         credentials = await exchange_code_for_tokens(code, state=state)
 
         # Extract email from ID token
         from .auth.oauth import get_email_from_credentials
         email = get_email_from_credentials(credentials)
         if not email:
+            logger.error("[OAuth] Could not extract email from credentials")
             raise ValueError("Could not extract email from credentials")
 
-        # Store tokens in database
-        storage.save_oauth_tokens(
-            email=email,
-            access_token=credentials.token,
-            refresh_token=credentials.refresh_token,
-            token_expiry=credentials.expiry or datetime.now(timezone.utc),
-        )
+        logger.info(f"[OAuth] Authenticated user: {email}")
 
-        logger.info(f"OAuth tokens stored for user: {email}")
+        # Store tokens in database.
+        # When prompt=select_account was used, Google does not return a new refresh
+        # token. In that case, reuse the existing refresh token from the DB.
+        refresh_token = credentials.refresh_token
+        if not refresh_token:
+            existing_tokens = storage.get_oauth_tokens(email)
+            if existing_tokens and existing_tokens.get("refresh_token"):
+                logger.info(f"[OAuth] No new refresh_token from Google — reusing existing DB token for {email}")
+                storage.update_access_token(
+                    email=email,
+                    access_token=credentials.token,
+                    token_expiry=credentials.expiry or datetime.now(timezone.utc),
+                )
+            else:
+                logger.error(f"[OAuth] No refresh_token from Google and none in DB for {email} — cannot complete auth")
+                raise ValueError(
+                    "No refresh token available. Please use 'Reconnect Gmail' to grant access again."
+                )
+        else:
+            logger.debug(f"[OAuth] Saving new OAuth tokens to database for {email}")
+            storage.save_oauth_tokens(
+                email=email,
+                access_token=credentials.token,
+                refresh_token=refresh_token,
+                token_expiry=credentials.expiry or datetime.now(timezone.utc),
+            )
+        logger.info(f"[OAuth] OAuth tokens stored for user: {email}")
 
         # Create JWT for session
+        logger.debug(f"[OAuth] Creating JWT session for {email}")
         jwt_token = create_jwt_token(email)
 
         # Determine redirect URL from the CSRF-verified state
         redirect_url = redirect_url_from_state or frontend_url
 
         # Validate redirect URL to prevent open redirects
+        from urllib.parse import urlparse
         allowed_hosts = ["localhost", "127.0.0.1"]
         try:
-            from urllib.parse import urlparse
+            _frontend_host = urlparse(frontend_url).hostname
+            if _frontend_host:
+                allowed_hosts.append(_frontend_host)
+        except Exception:
+            pass
+        try:
             parsed = urlparse(redirect_url)
             if parsed.hostname not in allowed_hosts:
-                logger.warning(f"Rejecting redirect to untrusted host: {parsed.hostname}")
+                logger.warning(f"[OAuth] Rejecting redirect to untrusted host: {parsed.hostname}")
                 redirect_url = frontend_url
         except Exception:
             redirect_url = frontend_url
 
-        logger.info(f"Redirecting to: {redirect_url}")
+        logger.info(f"[OAuth] Redirecting authenticated user to: {redirect_url}")
 
         # Create redirect response with auth cookie
         response = RedirectResponse(url=redirect_url, status_code=302)
@@ -288,18 +383,11 @@ async def auth_callback(
         # Clear the one-time CSRF state cookie
         clear_oauth_state_cookie(response)
 
-        # Clear any stale cookie from old domain="localhost" setting
-        if not os.environ.get("COOKIE_DOMAIN"):
-            response.delete_cookie(
-                key="auth_token",
-                path="/",
-                domain="localhost",
-            )
-
+        logger.info(f"[OAuth] === Callback complete for {email} ===")
         return response
 
     except ValueError as e:
-        logger.error(f"OAuth callback error: {e}")
+        logger.error(f"[OAuth] Callback error: {e}")
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
         error_url = f"{frontend_url}?auth_error={str(e)}"
         return RedirectResponse(url=error_url, status_code=302)
@@ -312,13 +400,18 @@ async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_us
     Returns the current user's email if authenticated, Gmail connection status,
     and attempts to refresh expired tokens if possible.
     """
+    logger.debug(f"[Auth] Status check — user={'authenticated: ' + user.email if user else 'unauthenticated'}")
     if user:
         # Check Gmail OAuth token status
         gmail_status = storage.is_gmail_connected(user.email)
+        logger.debug(
+            f"[Auth] Gmail status for {user.email}: connected={gmail_status['connected']}, "
+            f"can_refresh={gmail_status.get('can_refresh')}"
+        )
 
         # If tokens expired but can be refreshed, try to refresh them
         if not gmail_status["connected"] and gmail_status["can_refresh"]:
-            logger.info(f"Access token expired for {user.email}, attempting auto-refresh")
+            logger.info(f"[Auth] Access token expired for {user.email}, attempting auto-refresh")
             try:
                 from .auth.oauth import refresh_access_token
 
@@ -332,17 +425,19 @@ async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_us
                         access_token=new_access_token,
                         token_expiry=new_expiry,
                     )
-                    logger.info(f"Successfully refreshed access token for {user.email}")
+                    logger.info(f"[Auth] Successfully refreshed access token for {user.email}")
                     gmail_status = {"connected": True, "can_refresh": True, "token_expiry": new_expiry}
             except Exception as refresh_error:
-                logger.warning(f"Failed to auto-refresh token: {refresh_error}")
+                logger.warning(f"[Auth] Failed to auto-refresh token: {refresh_error}")
                 # gmail_status remains as is (not connected, can_refresh may now be false)
 
+        logger.info(f"[Auth] Status response: authenticated=True, email={user.email}, gmail_connected={gmail_status['connected']}")
         return {
             "authenticated": True,
             "email": user.email,
             "gmail_connected": gmail_status["connected"],
         }
+    logger.debug("[Auth] Status response: authenticated=False")
     return {
         "authenticated": False,
         "email": None,
@@ -351,23 +446,46 @@ async def auth_status(user: Optional[AuthenticatedUser] = Depends(get_current_us
 
 
 @app.post("/api/auth/logout")
-async def auth_logout(response: Response, user: Optional[AuthenticatedUser] = Depends(get_current_user)):
+async def auth_logout(response: Response, user: AuthenticatedUser = Depends(require_auth)):
     """Log out by clearing the auth cookie.
 
     Optionally also removes stored tokens from database.
     """
-    if user:
-        # Optionally delete tokens from database
-        try:
-            storage.delete_oauth_tokens(user.email)
-            logger.info(f"Deleted OAuth tokens for user: {user.email}")
-        except Exception as e:
-            logger.warning(f"Failed to delete tokens from database: {e}")
+    logger.info(f"[OAuth] === Logout endpoint hit (user={user.email}) ===")
 
-    # Clear the auth cookie
+    # Only clear the JWT session cookie. Preserve OAuth tokens in the database so
+    # that re-login can use prompt=select_account and skip the consent screen.
+    # Use POST /api/auth/disconnect to explicitly revoke and delete tokens.
     clear_auth_cookie(response)
+    logger.info("[OAuth] Logout complete — JWT cookie cleared, OAuth tokens preserved")
 
     return {"status": "logged_out"}
+
+
+@app.post("/api/auth/disconnect")
+async def auth_disconnect(
+    response: Response,
+    user: AuthenticatedUser = Depends(require_auth),
+):
+    """Explicitly revoke Gmail access and delete stored OAuth tokens.
+
+    This is more destructive than logout — it deletes the OAuth tokens from the
+    database. The next login will require a full Google consent screen to obtain
+    a new refresh token. Use this when the user wants to disconnect Gmail, not
+    just end a session.
+
+    After disconnecting, the JWT cookie is also cleared.
+    """
+    logger.info(f"[OAuth] === Disconnect endpoint hit (user={user.email}) ===")
+    try:
+        storage.delete_oauth_tokens(user.email)
+        logger.info(f"[OAuth] Deleted OAuth tokens for user: {user.email}")
+    except Exception as e:
+        logger.warning(f"[OAuth] Failed to delete tokens from database: {e}")
+
+    clear_auth_cookie(response)
+    logger.info("[OAuth] Disconnect complete — JWT cookie cleared, OAuth tokens deleted")
+    return {"status": "disconnected"}
 
 
 @app.websocket("/ws/logs")
@@ -400,9 +518,8 @@ async def websocket_logs(websocket: WebSocket):
 @app.get("/api/logs")
 async def get_logs(
     limit: int = 100,
-    user: AuthenticatedUser = Depends(require_auth)
 ):
-    """Get recent logs as JSON array. Requires authentication."""
+    """Get recent logs as JSON array. Public endpoint for debug access."""
     logs = list(log_buffer)
     logger.debug(f"Logs requested: returning {min(limit, len(logs))} of {len(logs)} entries")
     return logs[-limit:] if limit < len(logs) else logs
@@ -417,9 +534,8 @@ class FrontendLogRequest(BaseModel):
 @app.post("/api/frontend-log")
 async def receive_frontend_log(
     log_entry: FrontendLogRequest,
-    user: AuthenticatedUser = Depends(require_auth)
 ):
-    """Receive log entries from the frontend and add them to the log buffer. Requires authentication."""
+    """Receive log entries from the frontend and add them to the log buffer."""
     try:
         # Create a log entry that matches our format
         log_data = {
@@ -429,6 +545,9 @@ async def receive_frontend_log(
             "message": log_entry.message
         }
         log_buffer.append(log_data)
+        # Route frontend logs through Python logging so they hit the file handler
+        _fe_level = getattr(logging, log_entry.level.upper(), logging.INFO)
+        logging.getLogger("frontend").log(_fe_level, log_entry.message)
         logger.debug(f"Frontend log received: {log_entry.message}, subscribers: {len(log_subscribers)}")
 
         # Broadcast to all connected WebSocket clients

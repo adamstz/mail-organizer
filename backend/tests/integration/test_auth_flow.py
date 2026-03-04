@@ -118,15 +118,21 @@ class TestAuthEndpoints:
 
     def test_auth_logout_clears_cookie(self, client):
         """Test logout clears auth cookie."""
+        from src.auth.middleware import create_jwt_token, JWT_COOKIE_NAME
+
+        # Must be authenticated to log out
+        token = create_jwt_token("testuser@gmail.com")
+        client.cookies.set(JWT_COOKIE_NAME, token)
+
         response = client.post("/api/auth/logout")
-        
+
         assert response.status_code == 200
         assert response.json()["status"] == "logged_out"
-        
+
         # Check that cookie was cleared
         set_cookie = response.headers.get("set-cookie", "")
         # Should have max-age=0 or expires in past
-        assert "auth_token" in set_cookie.lower() or response.status_code == 200
+        assert "auth_token" in set_cookie.lower()
 
     def test_protected_endpoint_without_auth(self, client):
         """Test that protected endpoints return 401 without auth."""
@@ -344,8 +350,45 @@ class TestAuthenticatedSession:
         assert data["gmail_connected"] is False
 
     def test_logout_authenticated_user(self, authenticated_client):
-        """Test that authenticated user can logout."""
+        """Test that authenticated user can logout — cookie cleared, tokens preserved."""
+        from src import storage
+
+        # Save tokens before logout
+        from datetime import datetime, timedelta, timezone
+        storage.save_oauth_tokens(
+            email="testuser@gmail.com",
+            access_token="access",
+            refresh_token="refresh",
+            token_expiry=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
         response = authenticated_client.post("/api/auth/logout")
-        
+
         assert response.status_code == 200
         assert response.json()["status"] == "logged_out"
+
+        # Tokens must still exist — logout is non-destructive
+        tokens = storage.get_oauth_tokens("testuser@gmail.com")
+        assert tokens is not None
+        assert tokens.get("refresh_token") is not None
+
+    def test_disconnect_deletes_tokens(self, authenticated_client):
+        """Test that /api/auth/disconnect deletes OAuth tokens from the DB."""
+        from src import storage
+        from datetime import datetime, timedelta, timezone
+
+        storage.save_oauth_tokens(
+            email="testuser@gmail.com",
+            access_token="access",
+            refresh_token="refresh",
+            token_expiry=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+        response = authenticated_client.post("/api/auth/disconnect")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "disconnected"
+
+        # Tokens must be gone
+        tokens = storage.get_oauth_tokens("testuser@gmail.com")
+        assert tokens is None

@@ -98,7 +98,22 @@ class TestOAuthURLGeneration:
             assert "client_id=test_client_id" in url
             assert "response_type=code" in url
             assert "access_type=offline" in url
+            # Default prompt is "consent" to guarantee a refresh token on first use
             assert "prompt=consent" in url
+
+    def test_get_google_auth_url_select_account_prompt(self):
+        """Test that prompt=select_account skips consent screen for returning users."""
+        with patch.dict(os.environ, {
+            "GOOGLE_CLIENT_ID": "test_client_id",
+            "GOOGLE_CLIENT_SECRET": "test_secret",
+        }):
+            from src.auth.oauth import get_google_auth_url
+
+            url, _ = get_google_auth_url(prompt="select_account")
+
+            assert "accounts.google.com" in url
+            assert "prompt=select_account" in url
+            assert "prompt=consent" not in url
 
     def test_get_google_auth_url_with_state(self):
         """Test generating auth URL with custom state parameter."""
@@ -214,31 +229,37 @@ class TestTokenExchange:
             assert "not authorized" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_exchange_code_missing_refresh_token_raises(self):
-        """Test that missing refresh token raises error."""
+    async def test_exchange_code_missing_refresh_token_succeeds(self):
+        """Test that missing refresh token no longer raises — caller handles merging.
+
+        When prompt=select_account is used, Google does not return a new refresh
+        token. exchange_code_for_tokens must succeed and return credentials as-is;
+        it is the auth_callback's responsibility to merge the existing DB token.
+        """
         with patch.dict(os.environ, {
             "GOOGLE_CLIENT_ID": "test_client_id",
             "GOOGLE_CLIENT_SECRET": "test_secret",
         }):
             from src.auth.oauth import exchange_code_for_tokens
             from datetime import datetime, timedelta, timezone
-            
-            # Mock credentials without refresh token
+
+            # Mock credentials without refresh token (prompt=select_account scenario)
             mock_credentials = MagicMock()
             mock_credentials.token = "mock_access_token"
-            mock_credentials.refresh_token = None  # Missing!
+            mock_credentials.refresh_token = None  # Not returned by Google
             mock_credentials.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
             mock_credentials.id_token = {"email": "user@gmail.com"}
-            
+
             mock_flow = MagicMock()
             mock_flow.fetch_token = MagicMock()
             mock_flow.credentials = mock_credentials
-            
+
             with patch("src.auth.oauth._create_flow", return_value=mock_flow):
-                with pytest.raises(ValueError) as exc_info:
-                    await exchange_code_for_tokens("test_code")
-            
-            assert "refresh_token" in str(exc_info.value).lower()
+                # Should NOT raise; just returns credentials with refresh_token=None
+                credentials = await exchange_code_for_tokens("test_code")
+
+            assert credentials.token == "mock_access_token"
+            assert credentials.refresh_token is None  # Caller must handle this
 
     @pytest.mark.asyncio
     async def test_exchange_code_handles_scope_mismatch_warning(self):

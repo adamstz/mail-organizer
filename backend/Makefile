@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-unit test-smoke test-fast test-integration test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox pull-inbox-repull run
+.PHONY: help test test-all test-unit test-smoke test-fast test-integration test-llm test-storage test-jobs test-api test-cov lint lint-fix format clean classify classify-force pull-inbox pull-inbox-repull run run-debug
 
 # Python virtual environment
 VENV_PATH = ./.venv
@@ -25,6 +25,7 @@ help:
 	@echo ""
 	@echo "Server commands:"
 	@echo "  make run            - Run the FastAPI server (uvicorn)"
+	@echo "  make run-debug      - Run server with debug file logging (logs/app.log, no auth on /api/logs)"
 	@echo ""
 	@echo "Classification commands:"
 	@echo "  make classify       - Classify all unclassified messages"
@@ -146,3 +147,7 @@ pull-inbox-repull:
 # Run the FastAPI server
 run:
 	$(PYTHON) -m uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
+
+# Run the FastAPI server with debug file logging (logs written to logs/app.log)
+run-debug:
+	DEBUG_LOG=1 $(PYTHON) -m uvicorn src.api:app --reload --host 0.0.0.0 --port 8000

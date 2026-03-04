@@ -49,181 +49,185 @@ class TestOAuthTokenCheck:
         mock_storage.is_gmail_connected.assert_called_once_with("test@example.com")
 
     @pytest.mark.asyncio
-    async def test_login_with_valid_stored_tokens(self, mock_storage, mock_get_current_user):
-        """Test that valid stored tokens create JWT session without OAuth."""
+    async def test_login_no_jwt_has_refresh_token_uses_select_account(self, mock_storage, mock_get_current_user):
+        """Test that no-JWT login uses select_account when an existing refresh token is in the DB.
+
+        Returning users who still have a stored refresh token should see only the
+        account-picker screen (not the full consent screen) to minimise friction.
+        """
         from src.api import auth_login
-        
-        # Setup: no JWT session, but valid tokens in DB
+
         mock_get_current_user.return_value = None
         mock_storage.get_authenticated_email.return_value = "test@example.com"
-        
-        # Valid token that expires in the future
-        future_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
         mock_storage.get_oauth_tokens.return_value = {
-            "access_token": "valid_access_token",
-            "refresh_token": "refresh_token",
-            "token_expiry": future_expiry
+            "access_token": "old_access",
+            "refresh_token": "existing_refresh",
         }
-        
-        # Execute
-        with patch('src.api.create_jwt_token') as mock_create_jwt, \
-             patch('src.api.set_auth_cookie') as mock_set_cookie:
-            mock_create_jwt.return_value = "new_jwt_token"
-            response = await auth_login(redirect_url=None, user=None)
-        
-        # Verify: should create JWT and redirect without OAuth
-        assert isinstance(response, RedirectResponse)
-        assert "accounts.google.com" not in response.headers["location"]
-        mock_create_jwt.assert_called_once_with("test@example.com")
-        
-        # Should not refresh token since it's still valid
-        mock_storage.update_access_token.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_login_with_expired_tokens_successful_refresh(self, mock_storage, mock_get_current_user):
-        """Test that expired tokens are refreshed successfully."""
-        from src.api import auth_login
-        
-        # Setup: no JWT session, expired tokens in DB
-        mock_get_current_user.return_value = None
-        mock_storage.get_authenticated_email.return_value = "test@example.com"
-        
-        # Expired token
-        past_expiry = datetime.now(timezone.utc) - timedelta(hours=1)
-        mock_storage.get_oauth_tokens.return_value = {
-            "access_token": "expired_access_token",
-            "refresh_token": "refresh_token",
-            "token_expiry": past_expiry
-        }
-        
-        # Mock successful token refresh
-        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
-        
-        with patch('src.auth.oauth.refresh_access_token') as mock_refresh, \
-             patch('src.api.create_jwt_token') as mock_create_jwt, \
-             patch('src.api.set_auth_cookie') as mock_set_cookie:
-            
-            mock_refresh.return_value = ("new_access_token", new_expiry)
-            mock_create_jwt.return_value = "new_jwt_token"
-            
-            # Execute
-            response = await auth_login(redirect_url=None, user=None)
-        
-        # Verify: should refresh token, update storage, and create JWT
-        mock_refresh.assert_called_once_with("refresh_token")
-        mock_storage.update_access_token.assert_called_once_with(
-            email="test@example.com",
-            access_token="new_access_token",
-            token_expiry=new_expiry
-        )
-        mock_create_jwt.assert_called_once_with("test@example.com")
-        
-        # Should redirect without OAuth
-        assert isinstance(response, RedirectResponse)
-        assert "accounts.google.com" not in response.headers["location"]
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
 
-    @pytest.mark.asyncio
-    async def test_login_with_expired_tokens_failed_refresh(self, mock_storage, mock_get_current_user):
-        """Test that failed token refresh falls back to full OAuth."""
-        from src.api import auth_login
-        
-        # Setup: no JWT session, expired tokens in DB
-        mock_get_current_user.return_value = None
-        mock_storage.get_authenticated_email.return_value = "test@example.com"
-        
-        # Expired token
-        past_expiry = datetime.now(timezone.utc) - timedelta(hours=1)
-        mock_storage.get_oauth_tokens.return_value = {
-            "access_token": "expired_access_token",
-            "refresh_token": "invalid_refresh_token",
-            "token_expiry": past_expiry
-        }
-        
-        # Mock failed token refresh
-        with patch('src.auth.oauth.refresh_access_token') as mock_refresh, \
-             patch('src.api.get_google_auth_url') as mock_auth_url:
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?prompt=select_account", "encoded_state")
 
-            mock_refresh.side_effect = ValueError("Invalid refresh token")
-            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?...", "test_state")
-            
-            # Execute
             response = await auth_login(redirect_url=None, user=None)
-        
-        # Verify: should attempt refresh, fail, then redirect to OAuth
-        mock_refresh.assert_called_once()
+
+        # Should redirect to Google OAuth with select_account
         assert isinstance(response, RedirectResponse)
         assert "accounts.google.com" in response.headers["location"]
+        mock_auth_url.assert_called_once()
+        _, call_kwargs = mock_auth_url.call_args
+        assert call_kwargs.get("prompt") == "select_account"
 
     @pytest.mark.asyncio
-    async def test_login_with_no_tokens(self, mock_storage, mock_get_current_user):
-        """Test that no tokens initiates full OAuth flow."""
+    async def test_login_no_jwt_no_existing_user_uses_consent(self, mock_storage, mock_get_current_user):
+        """Test that no-JWT login uses consent when no user exists in the DB (first login)."""
         from src.api import auth_login
-        
-        # Setup: no JWT session, no stored tokens
+
         mock_get_current_user.return_value = None
         mock_storage.get_authenticated_email.return_value = None
-        
-        with patch('src.api.get_google_auth_url') as mock_auth_url:
-            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?...", "test_state")
-            
-            # Execute
+
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
+
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?prompt=consent", "encoded_state")
+
             response = await auth_login(redirect_url=None, user=None)
-        
-        # Verify: should redirect to OAuth
+
         assert isinstance(response, RedirectResponse)
         assert "accounts.google.com" in response.headers["location"]
-        mock_storage.get_oauth_tokens.assert_not_called()
+        mock_auth_url.assert_called_once()
+        _, call_kwargs = mock_auth_url.call_args
+        assert call_kwargs.get("prompt") == "consent"
 
     @pytest.mark.asyncio
-    async def test_login_with_no_refresh_token(self, mock_storage, mock_get_current_user):
-        """Test that expired token without refresh token triggers OAuth."""
+    async def test_login_no_jwt_existing_user_no_refresh_token_uses_consent(
+        self, mock_storage, mock_get_current_user
+    ):
+        """Test that no-JWT login uses consent when user exists but has no refresh token.
+
+        This covers the case where the token was revoked or the DB row lost its refresh
+        token — consent is needed to obtain a fresh one and break the auth loop.
+        """
         from src.api import auth_login
-        
-        # Setup: expired token, no refresh token
+
         mock_get_current_user.return_value = None
         mock_storage.get_authenticated_email.return_value = "test@example.com"
-        
-        past_expiry = datetime.now(timezone.utc) - timedelta(hours=1)
-        mock_storage.get_oauth_tokens.return_value = {
-            "access_token": "expired_access_token",
-            "refresh_token": None,  # No refresh token
-            "token_expiry": past_expiry
-        }
-        
-        with patch('src.api.get_google_auth_url') as mock_auth_url:
-            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?...", "test_state")
-            
-            # Execute
+        mock_storage.get_oauth_tokens.return_value = None  # No tokens in DB
+
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
+
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?prompt=consent", "encoded_state")
+
             response = await auth_login(redirect_url=None, user=None)
-        
-        # Verify: should redirect to OAuth without attempting refresh
+
         assert isinstance(response, RedirectResponse)
         assert "accounts.google.com" in response.headers["location"]
+        mock_auth_url.assert_called_once()
+        _, call_kwargs = mock_auth_url.call_args
+        assert call_kwargs.get("prompt") == "consent"
 
     @pytest.mark.asyncio
-    async def test_login_preserves_redirect_url(self, mock_storage, mock_get_current_user):
-        """Test that redirect_url is preserved through token check."""
+    async def test_login_force_uses_consent(self, mock_storage, mock_get_current_user):
+        """Test that force=True always uses prompt=consent to get a fresh refresh token."""
         from src.api import auth_login
-        
-        # Setup: valid stored tokens
+
         mock_get_current_user.return_value = None
-        mock_storage.get_authenticated_email.return_value = "test@example.com"
-        
-        future_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
+
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?prompt=consent", "encoded_state")
+
+            response = await auth_login(redirect_url=None, force=True, user=None)
+
+        assert isinstance(response, RedirectResponse)
+        mock_auth_url.assert_called_once()
+        _, call_kwargs = mock_auth_url.call_args
+        assert call_kwargs.get("prompt") == "consent"
+
+    @pytest.mark.asyncio
+    async def test_login_jwt_gmail_disconnected_has_db_tokens_uses_select_account(
+        self, mock_storage, mock_get_current_user
+    ):
+        """Test JWT-valid but Gmail-disconnected uses select_account when DB token exists."""
+        from src.api import auth_login
+
+        mock_user = AuthenticatedUser(email="test@example.com")
+        mock_get_current_user.return_value = mock_user
+        mock_storage.is_gmail_connected.return_value = {"connected": False}
         mock_storage.get_oauth_tokens.return_value = {
-            "access_token": "valid_access_token",
+            "access_token": "old_token",
             "refresh_token": "refresh_token",
-            "token_expiry": future_expiry
         }
-        
-        custom_redirect = "http://localhost:5173/dashboard"
-        
-        # Execute
-        with patch('src.api.create_jwt_token') as mock_create_jwt, \
-             patch('src.api.set_auth_cookie') as mock_set_cookie:
-            mock_create_jwt.return_value = "new_jwt_token"
-            response = await auth_login(redirect_url=custom_redirect, user=None)
-        
-        # Verify: should redirect to custom URL
+
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
+
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?prompt=select_account", "encoded_state")
+
+            response = await auth_login(redirect_url=None, user=mock_user)
+
         assert isinstance(response, RedirectResponse)
-        assert response.headers["location"] == custom_redirect
+        mock_auth_url.assert_called_once()
+        _, call_kwargs = mock_auth_url.call_args
+        assert call_kwargs.get("prompt") == "select_account"
+
+    @pytest.mark.asyncio
+    async def test_login_jwt_gmail_disconnected_no_db_tokens_uses_consent(
+        self, mock_storage, mock_get_current_user
+    ):
+        """Test JWT-valid but Gmail-disconnected uses consent when no DB token exists."""
+        from src.api import auth_login
+
+        mock_user = AuthenticatedUser(email="test@example.com")
+        mock_get_current_user.return_value = mock_user
+        mock_storage.is_gmail_connected.return_value = {"connected": False}
+        mock_storage.get_oauth_tokens.return_value = None  # No tokens in DB
+
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
+
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth?prompt=consent", "encoded_state")
+
+            response = await auth_login(redirect_url=None, user=mock_user)
+
+        assert isinstance(response, RedirectResponse)
+        mock_auth_url.assert_called_once()
+        _, call_kwargs = mock_auth_url.call_args
+        assert call_kwargs.get("prompt") == "consent"
+
+    @pytest.mark.asyncio
+    async def test_login_no_jwt_encodes_redirect_url_in_state(self, mock_storage, mock_get_current_user):
+        """Test that redirect_url is encoded into the OAuth state for later retrieval."""
+        from src.api import auth_login
+
+        mock_get_current_user.return_value = None
+        mock_storage.get_authenticated_email.return_value = "test@example.com"
+        mock_storage.get_oauth_tokens.return_value = {"refresh_token": "existing_refresh"}
+        custom_redirect = "http://localhost:5173/dashboard"
+
+        with patch('src.api.get_google_auth_url') as mock_auth_url, \
+             patch('src.api.generate_oauth_state') as mock_state, \
+             patch('src.api.set_oauth_state_cookie'):
+
+            mock_state.return_value = ("encoded_state", "nonce123")
+            mock_auth_url.return_value = ("https://accounts.google.com/o/oauth2/v2/auth", "encoded_state")
+
+            response = await auth_login(redirect_url=custom_redirect, user=None)
+
+        # The redirect_url must be passed to generate_oauth_state so it survives the OAuth round-trip
+        mock_state.assert_called_once_with(custom_redirect)
+        assert isinstance(response, RedirectResponse)

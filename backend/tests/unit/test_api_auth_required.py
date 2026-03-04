@@ -198,19 +198,19 @@ class TestUnauthenticatedAccess:
 
     # ==================== Log Endpoints ====================
 
-    def test_get_logs_requires_auth(self, client):
-        """Test GET /api/logs returns 401 without auth."""
+    def test_get_logs_is_public(self, client):
+        """Test GET /api/logs is accessible without auth (public debug endpoint)."""
         response = client.get("/api/logs")
-        assert response.status_code == 401
+        assert response.status_code == 200
 
-    def test_frontend_log_requires_auth(self, client):
-        """Test POST /api/frontend-log returns 401 without auth."""
+    def test_frontend_log_is_public(self, client):
+        """Test POST /api/frontend-log is accessible without auth (public debug endpoint)."""
         response = client.post("/api/frontend-log", json={
             "level": "info",
             "message": "test",
             "timestamp": "2024-01-01T00:00:00Z"
         })
-        assert response.status_code == 401
+        assert response.status_code == 200
 
 
 class TestPublicEndpoints:
