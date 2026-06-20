@@ -9,6 +9,7 @@ Handles the OAuth2 authorization code flow for Gmail access:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import logging
 import secrets
@@ -25,6 +26,15 @@ from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
+
+
+class InsufficientScopesError(ValueError):
+    """Raised when Google granted fewer scopes than required (e.g. gmail.modify missing).
+
+    The callback handler should auto-retry with prompt=consent rather than
+    showing this as a user-visible error.
+    """
+
 
 # Required scopes for Gmail access
 # Using gmail.modify for read, modify, and delete (not send)
@@ -110,7 +120,23 @@ def _create_flow(state: Optional[str] = None) -> Flow:
     return flow
 
 
-def get_google_auth_url(state: Optional[str] = None, prompt: str = "consent") -> tuple[str, str]:
+def generate_pkce_pair() -> tuple[str, str]:
+    """Generate a PKCE code_verifier / code_challenge pair (S256 method).
+
+    Returns:
+        Tuple of (code_verifier, code_challenge)
+    """
+    code_verifier = secrets.token_urlsafe(96)
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return code_verifier, code_challenge
+
+
+def get_google_auth_url(
+    state: Optional[str] = None,
+    prompt: str = "consent",
+    code_verifier: Optional[str] = None,
+) -> tuple[str, str]:
     """Generate the Google OAuth2 authorization URL using Google SDK.
 
     Args:
@@ -127,11 +153,17 @@ def get_google_auth_url(state: Optional[str] = None, prompt: str = "consent") ->
     logger.info(f"[OAuth] Generating Google auth URL (state={'provided' if state else 'auto'}, prompt={prompt})")
     flow = _create_flow(state=state)
 
-    auth_url, returned_state = flow.authorization_url(
-        access_type="offline",  # Request refresh token
-        prompt=prompt,
-        include_granted_scopes="true",
-    )
+    auth_kwargs: dict = {
+        "access_type": "offline",
+        "prompt": prompt,
+        "include_granted_scopes": "true",
+    }
+    if code_verifier:
+        digest = hashlib.sha256(code_verifier.encode()).digest()
+        auth_kwargs["code_challenge"] = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        auth_kwargs["code_challenge_method"] = "S256"
+
+    auth_url, returned_state = flow.authorization_url(**auth_kwargs)
 
     logger.info(f"[OAuth] Generated auth URL (access_type=offline, prompt={prompt})")
     logger.debug(f"[OAuth] Auth URL domain: {auth_url.split('?')[0]}")
@@ -187,7 +219,7 @@ def verify_oauth_state(state: str, expected_nonce: str) -> tuple[bool, Optional[
         return False, None
 
 
-async def exchange_code_for_tokens(code: str, state: Optional[str] = None) -> Credentials:
+async def exchange_code_for_tokens(code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> Credentials:
     """Exchange authorization code for access and refresh tokens using Google SDK.
 
     Args:
@@ -206,16 +238,48 @@ async def exchange_code_for_tokens(code: str, state: Optional[str] = None) -> Cr
         flow = _create_flow(state=state)
 
         # Exchange authorization code for tokens
-        # oauthlib may raise Warning exception if returned scopes differ from requested
+        # oauthlib raises Warning when returned scopes differ from requested
         logger.debug("[OAuth] Fetching token from Google...")
+        scope_warning = None
+        fetch_kwargs: dict = {"code": code}
+        if code_verifier:
+            fetch_kwargs["code_verifier"] = code_verifier
         try:
-            flow.fetch_token(code=code)
+            flow.fetch_token(**fetch_kwargs)
         except Warning as w:
-            # This is expected when Google grants fewer scopes than requested
-            # The credentials are still populated, so we can continue
-            logger.warning(f"[OAuth] Scope mismatch during token exchange (this is expected): {w}")
+            scope_warning = w
+            logger.warning(f"[OAuth] Scope mismatch during token exchange: {w}")
 
-        credentials = flow.credentials
+        # Accessing flow.credentials raises when fetch_token was interrupted by
+        # a scope mismatch and tokens were not stored (e.g. gmail.modify not granted).
+        try:
+            credentials = flow.credentials
+        except Exception:
+            credentials = None
+            # When prompt=select_account, Google returns only basic scopes (email/openid)
+            # and doesn't re-grant gmail.modify. We can still verify identity via the
+            # ID token and reuse the existing DB refresh token for Gmail access.
+            if scope_warning is not None:
+                raw = getattr(flow.oauth2session, 'token', {}) or {}
+                if raw.get('access_token') and raw.get('id_token'):
+                    logger.info("[OAuth] Partial scope response — building credentials from raw token for identity check")
+                    _client_id, _client_secret, _ = get_oauth_config()
+                    credentials = Credentials(
+                        token=raw['access_token'],
+                        refresh_token=raw.get('refresh_token'),
+                        token_uri='https://oauth2.googleapis.com/token',
+                        client_id=_client_id,
+                        client_secret=_client_secret,
+                    )
+                    credentials._id_token = raw['id_token']
+
+        if not credentials or not credentials.token:
+            # Google did not grant any usable token — force a full consent retry
+            missing = [s for s in GMAIL_SCOPES if "gmail" in s]
+            raise InsufficientScopesError(
+                f"Gmail access was not granted. Required scope missing: {missing}. "
+                "Please grant all requested permissions."
+            )
         logger.debug(f"[OAuth] Token fetch complete — credentials={'present' if credentials else 'MISSING'}")
 
         # Verify we got credentials despite potential scope mismatch

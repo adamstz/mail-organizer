@@ -62,6 +62,12 @@ class StorageBackend:
     def set_history_id(self, history_id: str) -> None:
         raise NotImplementedError()
 
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        raise NotImplementedError()
+
+    def set_setting(self, key: str, value: str) -> None:
+        raise NotImplementedError()
+
     # Classification record persistence
     def save_classification_record(self, record) -> None:
         """Persist a classification record object.

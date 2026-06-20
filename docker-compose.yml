@@ -1,46 +1,38 @@
-version: '3.8'
-
 services:
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:5173"
-    environment:
-      - VITE_API_URL=http://backend:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
-
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID}
-      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET}
-      - GMAIL_REFRESH_TOKEN=${GMAIL_REFRESH_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GOOGLE_PROJECT_ID=${GOOGLE_PROJECT_ID}
-      - GOOGLE_PUBSUB_TOPIC=${GOOGLE_PUBSUB_TOPIC}
-      - GOOGLE_PUBSUB_SUBSCRIPTION=${GOOGLE_PUBSUB_SUBSCRIPTION}
     volumes:
       - ./backend:/app
-    depends_on:
-      - llm-service
-
-  llm-service:
-    build:
-      context: ./llm
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
+    # Read straight from the .env file rather than interpolating ${VARS} from
+    # the host shell - if you also export STORAGE_BACKEND/JWT_SECRET/etc.
+    # natively (e.g. via ~/.bashrc), those would otherwise silently win over
+    # .env and point the container at config that doesn't exist in-container
+    # (like a Postgres tunnel only set up on the host).
+    env_file:
+      - .env
     environment:
-      - MODEL_PATH=/models/your-model
+      - STORAGE_DB_PATH=/app/mail.db
+    extra_hosts:
+      # Lets the container resolve "host.docker.internal" on Linux too (Docker
+      # Desktop on Mac/Windows already supports this out of the box).
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "5173:5173"
+    environment:
+      # "localhost" inside this container would point at itself, not backend.
+      - BACKEND_PROXY_TARGET=http://backend:8000
     volumes:
-      - ./llm:/app
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend

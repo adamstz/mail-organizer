@@ -11,7 +11,7 @@ Configuration via environment variables:
 - LLM_PROVIDER: "openai", "anthropic", "ollama", "command", or "rules" (default: auto-detect)
 - OPENAI_API_KEY: OpenAI API key (if using OpenAI)
 - ANTHROPIC_API_KEY: Anthropic API key (if using Anthropic)
-- OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
+- OLLAMA_HOST: Ollama server URL (default: http://localhost:11434, auto-resolved to host.docker.internal in Docker)
 - ORGANIZE_MAIL_LLM_CMD: External command to run (if using command provider)
 - LLM_MODEL: Model name (default: gpt-3.5-turbo for OpenAI, claude-3-haiku for Anthropic, llama3 for Ollama)
 """
@@ -27,6 +27,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import SystemMessage, HumanMessage
 from ..classification_labels import ALLOWED_LABELS
+from ..utils.docker import get_ollama_host
 from .prompt_templates import (
     CLASSIFICATION_SYSTEM_MESSAGE,
     build_classification_prompt,
@@ -45,27 +46,29 @@ class LLMProcessor:
     MAX_TOKENS = 200
     TIMEOUT = 60  # Increased for slower local models
 
-    def __init__(self, config: Dict | None = None):
+    def __init__(
+        self,
+        config: Dict | None = None,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ):
         self.config = config or {}
-        self.provider = self._detect_provider()
-        self.model = self._get_model_name()
+        self._explicit_api_key = api_key
+        self.provider = provider or self._detect_provider()
+        self.model = model or self._get_model_name()
         self.llm: Optional[BaseChatModel] = self._initialize_llm()
 
-        # Log LLM configuration
         logger.info(f"[LLM INIT] Initialized LLM processor - Provider: {self.provider}, Model: {self.model}")
-
-        # Set up output parser for JSON responses
         self.json_parser = JsonOutputParser()
 
     def _detect_provider(self) -> str:
         """Auto-detect which LLM provider to use based on env vars."""
         provider = os.environ.get("LLM_PROVIDER", "").lower()
 
-        # If explicitly set to rules (for testing), allow it
         if provider == "rules":
             return provider
-
-        # Check for explicit provider setting
         if provider in ("openai", "anthropic", "ollama", "command"):
             return provider
 
@@ -79,7 +82,6 @@ class LLMProcessor:
         if os.environ.get("ORGANIZE_MAIL_LLM_CMD"):
             return "command"
 
-        # No LLM provider available - raise error
         raise RuntimeError(
             "No LLM provider configured. Please set one of:\n"
             "  - OPENAI_API_KEY for OpenAI\n"
@@ -91,7 +93,7 @@ class LLMProcessor:
 
     def _is_ollama_running(self) -> bool:
         """Check if Ollama is running and accessible."""
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        host = get_ollama_host()
         try:
             req = urllib.request.Request(f"{host}/api/tags", method="GET")
             with urllib.request.urlopen(req, timeout=2) as response:
@@ -105,11 +107,10 @@ class LLMProcessor:
         if model:
             return model
 
-        # Provider defaults
         if self.provider == "openai":
             return "gpt-3.5-turbo"
         elif self.provider == "anthropic":
-            return "claude-3-haiku-20240307"
+            return "claude-haiku-4-5-20251001"
         elif self.provider == "ollama":
             return self._get_best_ollama_model()
 
@@ -121,7 +122,7 @@ class LLMProcessor:
         Returns:
             The name of the best available model, or 'llama3' as fallback.
         """
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        host = get_ollama_host()
         try:
             req = urllib.request.Request(f"{host}/api/tags", method="GET")
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -159,7 +160,7 @@ class LLMProcessor:
         try:
             if self.provider == "openai":
                 from langchain_openai import ChatOpenAI
-                api_key = os.environ.get("OPENAI_API_KEY")
+                api_key = self._explicit_api_key or os.environ.get("OPENAI_API_KEY")
                 if not api_key:
                     logger.warning("[LLM INIT] OPENAI_API_KEY not set, cannot initialize LangChain")
                     return None
@@ -172,7 +173,7 @@ class LLMProcessor:
 
             elif self.provider == "anthropic":
                 from langchain_anthropic import ChatAnthropic
-                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                api_key = self._explicit_api_key or os.environ.get("ANTHROPIC_API_KEY")
                 if not api_key:
                     logger.warning("[LLM INIT] ANTHROPIC_API_KEY not set, cannot initialize LangChain")
                     return None
@@ -185,7 +186,7 @@ class LLMProcessor:
 
             elif self.provider == "ollama":
                 from langchain_ollama import ChatOllama
-                host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+                host = get_ollama_host()
                 return ChatOllama(
                     model=self.model,
                     temperature=self.TEMPERATURE,
@@ -316,7 +317,7 @@ class LLMProcessor:
         except ImportError:
             raise ImportError("openai package not installed. Run: pip install openai")
 
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = self._explicit_api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not set")
 
@@ -339,7 +340,7 @@ class LLMProcessor:
         except ImportError:
             raise ImportError("anthropic package not installed. Run: pip install anthropic")
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = self._explicit_api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not set")
 
@@ -360,7 +361,7 @@ class LLMProcessor:
 
     def _call_ollama_direct(self, prompt: str) -> str:
         """Call Ollama API directly and return raw response text."""
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        host = get_ollama_host()
 
         payload = {
             "model": self.model,

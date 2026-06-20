@@ -23,6 +23,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 7
 JWT_COOKIE_NAME = "auth_token"
 OAUTH_STATE_COOKIE_NAME = "oauth_state"
+PKCE_VERIFIER_COOKIE_NAME = "pkce_verifier"
 
 
 @dataclass
@@ -176,6 +177,27 @@ def clear_oauth_state_cookie(response: Response) -> None:
     """Clear the OAuth CSRF state cookie after verification."""
     response.delete_cookie(key=OAUTH_STATE_COOKIE_NAME, path="/")
     logger.debug("[Auth] Cleared OAuth state cookie")
+
+
+def set_pkce_cookie(response: Response, code_verifier: str) -> None:
+    """Store the PKCE code_verifier in an httponly cookie for the OAuth flow."""
+    is_secure = os.environ.get("SECURE_COOKIES", "false").lower() == "true"
+    response.set_cookie(
+        key=PKCE_VERIFIER_COOKIE_NAME,
+        value=code_verifier,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=600,
+        path="/",
+    )
+    logger.debug("[Auth] Set PKCE verifier cookie")
+
+
+def clear_pkce_cookie(response: Response) -> None:
+    """Clear the PKCE verifier cookie after token exchange."""
+    response.delete_cookie(key=PKCE_VERIFIER_COOKIE_NAME, path="/")
+    logger.debug("[Auth] Cleared PKCE verifier cookie")
 
 
 async def get_current_user(request: Request) -> Optional[AuthenticatedUser]:

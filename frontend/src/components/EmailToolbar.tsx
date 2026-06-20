@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Box, ToggleButton, ToggleButtonGroup, TextField, InputAdornment, Chip, Stack, Typography, Button, Select, MenuItem, FormControl, InputLabel, Alert, Snackbar, CircularProgress } from '@mui/material';
-import { Search as SearchIcon, ArrowUpward as ArrowUpIcon, ArrowDownward as ArrowDownIcon, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, Refresh as RefreshIcon, Delete as DeleteIcon, CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon } from '@mui/icons-material';
+import { Box, ToggleButton, ToggleButtonGroup, TextField, InputAdornment, Chip, Stack, Typography, Button, Select, MenuItem, FormControl, InputLabel, Alert, Snackbar, CircularProgress, IconButton, Tooltip } from '@mui/material';
+import { Search as SearchIcon, ArrowUpward as ArrowUpIcon, ArrowDownward as ArrowDownIcon, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, Refresh as RefreshIcon, Delete as DeleteIcon, CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon, Settings as SettingsIcon } from '@mui/icons-material';
 import { logger } from '../utils/logger';
 import ConfirmDialog from './ConfirmDialog';
+import LLMSettings from './LLMSettings';
 
 interface EmailToolbarProps {
   searchQuery: string;
@@ -48,8 +49,10 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
   const [loading, setLoading] = useState(false);
   const [showAllLabels, setShowAllLabels] = useState(false);
   const [models, setModels] = useState<Array<{ name: string; size: number }>>([]);
+  const [llmProvider, setLlmProvider] = useState<string>('ollama');
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [startingOllama, setStartingOllama] = useState(false);
+  const [llmSettingsOpen, setLlmSettingsOpen] = useState(false);
   const MAX_VISIBLE_LABELS = 6; // Number of labels to show before collapsing
 
   // Bulk delete state
@@ -190,8 +193,8 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
       const res = await fetch('/models');
       if (res.ok) {
         const data = await res.json();
-        const fetchedModels = data.models || [];
-        setModels(fetchedModels);
+        setLlmProvider(data.provider || 'ollama');
+        setModels(data.models || []);
         setOllamaError(null);
       } else if (res.status === 503) {
         const data = await res.json();
@@ -298,38 +301,57 @@ const EmailToolbar: React.FC<EmailToolbarProps> = ({
       )}
 
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: 2 }}>
-        <FormControl size="small" sx={{ minWidth: 150 }} error={!!ollamaError}>
-          <InputLabel>LLM Model</InputLabel>
-          <Select
-            value={selectedModel}
-            label="LLM Model"
-            onChange={(e) => handleModelChange(e.target.value)}
-            disabled={models.length === 0}
-          >
-            {models.map((model) => (
-              <MenuItem key={model.name} value={model.name}>
-                {model.name}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-
-        {ollamaError && (
+        {llmProvider === 'ollama' && (
           <>
-            <Alert severity="warning" sx={{ py: 0, alignItems: 'center' }}>
-              {ollamaError}
-            </Alert>
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={startingOllama ? <RefreshIcon className="spin" /> : <RefreshIcon />}
-              onClick={handleStartOllama}
-              disabled={startingOllama}
-            >
-              {startingOllama ? 'Starting...' : 'Start Ollama'}
-            </Button>
+            <FormControl size="small" sx={{ minWidth: 150 }} error={!!ollamaError}>
+              <InputLabel>LLM Model</InputLabel>
+              <Select
+                value={selectedModel}
+                label="LLM Model"
+                onChange={(e) => handleModelChange(e.target.value)}
+                disabled={models.length === 0}
+              >
+                {models.map((model) => (
+                  <MenuItem key={model.name} value={model.name}>
+                    {model.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {ollamaError && (
+              <>
+                <Alert severity="warning" sx={{ py: 0, alignItems: 'center' }}>
+                  {ollamaError}
+                </Alert>
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={startingOllama ? <RefreshIcon className="spin" /> : <RefreshIcon />}
+                  onClick={handleStartOllama}
+                  disabled={startingOllama}
+                >
+                  {startingOllama ? 'Starting...' : 'Start Ollama'}
+                </Button>
+              </>
+            )}
           </>
         )}
+
+        <Tooltip title="LLM provider settings">
+          <IconButton size="small" onClick={() => setLlmSettingsOpen(true)}>
+            <SettingsIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+
+        <LLMSettings
+          open={llmSettingsOpen}
+          onClose={() => setLlmSettingsOpen(false)}
+          onSaved={(newProvider) => {
+            setLlmProvider(newProvider);
+            fetchModels();
+          }}
+        />
 
         <TextField
           size="small"

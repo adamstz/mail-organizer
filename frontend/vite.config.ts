@@ -6,6 +6,12 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Where the backend lives. Defaults to localhost for native (non-Docker) dev;
+// docker-compose overrides this to http://backend:8000 since "localhost" inside
+// the frontend container would otherwise point at itself, not the backend container.
+const backendTarget = process.env.BACKEND_PROXY_TARGET || 'http://localhost:8000';
+const backendWsTarget = backendTarget.replace(/^http/, 'ws');
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -14,40 +20,41 @@ export default defineConfig({
     },
   },
   server: {
+    host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: backendWsTarget,
         changeOrigin: true,
         secure: false,
         ws: true,
       },
       '/messages': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
       },
       '/labels': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
       },
       '/models': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
       },
       '/filter': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
       },
       '/stats': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
       },

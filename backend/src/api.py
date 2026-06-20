@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import os
 
 from . import storage
+from .utils.docker import get_ollama_host
 from .services import LLMProcessor, EmbeddingService, RAGQueryEngine
 from .sync_manager import get_sync_manager
 from .auth import (
@@ -21,14 +22,39 @@ from .auth import (
     AuthenticatedUser,
     require_auth,
 )
-from .auth.oauth import generate_oauth_state, verify_oauth_state
+from .auth.oauth import generate_oauth_state, verify_oauth_state, InsufficientScopesError
 from .auth.middleware import (
     set_auth_cookie,
     clear_auth_cookie,
     OAUTH_STATE_COOKIE_NAME,
+    PKCE_VERIFIER_COOKIE_NAME,
     set_oauth_state_cookie,
     clear_oauth_state_cookie,
+    set_pkce_cookie,
+    clear_pkce_cookie,
 )
+from .auth.oauth import generate_pkce_pair
+
+
+SUPPORTED_PROVIDERS = ["ollama", "openai", "anthropic", "rules"]
+
+
+def _load_llm_settings() -> dict:
+    """Load LLM settings from DB, falling back to env vars, then ollama."""
+    provider = storage.get_setting("llm.provider") or os.getenv("LLM_PROVIDER", "ollama")
+    model = storage.get_setting("llm.model") or os.getenv("LLM_MODEL", "")
+    api_key = storage.get_setting("llm.api_key")
+    return {"provider": provider, "model": model, "api_key": api_key}
+
+
+def _build_llm_processor() -> LLMProcessor:
+    """Build an LLMProcessor from DB settings (falls back to env vars / Ollama)."""
+    cfg = _load_llm_settings()
+    return LLMProcessor(
+        provider=cfg["provider"] or None,
+        model=cfg["model"] or None,
+        api_key=cfg["api_key"] or None,
+    )
 
 
 @asynccontextmanager
@@ -178,11 +204,13 @@ def _create_oauth_redirect(
     """
     logger.info(f"[OAuth] Creating OAuth redirect (redirect_url={redirect_url or 'none'}, prompt={prompt})")
     state, nonce = generate_oauth_state(redirect_url)
-    logger.debug(f"[OAuth] Generated CSRF state for redirect")
-    auth_url, _ = get_google_auth_url(state=state, prompt=prompt)
+    code_verifier, _ = generate_pkce_pair()
+    logger.debug(f"[OAuth] Generated CSRF state and PKCE pair for redirect")
+    auth_url, _ = get_google_auth_url(state=state, prompt=prompt, code_verifier=code_verifier)
     logger.debug(f"[OAuth] Got Google auth URL, creating redirect response")
     response = RedirectResponse(url=auth_url)
     set_oauth_state_cookie(response, nonce)
+    set_pkce_cookie(response, code_verifier)
     logger.info(f"[OAuth] Redirecting to Google OAuth ({prompt})")
     return response
 
@@ -311,7 +339,8 @@ async def auth_callback(
 
         # Exchange code for tokens (returns Credentials object from Google SDK)
         logger.info("[OAuth] Exchanging authorization code for tokens...")
-        credentials = await exchange_code_for_tokens(code, state=state)
+        code_verifier = request.cookies.get(PKCE_VERIFIER_COOKIE_NAME)
+        credentials = await exchange_code_for_tokens(code, state=state, code_verifier=code_verifier)
 
         # Extract email from ID token
         from .auth.oauth import get_email_from_credentials
@@ -380,16 +409,21 @@ async def auth_callback(
         response = RedirectResponse(url=redirect_url, status_code=302)
         set_auth_cookie(response, jwt_token)
 
-        # Clear the one-time CSRF state cookie
+        # Clear the one-time CSRF state and PKCE cookies
         clear_oauth_state_cookie(response)
+        clear_pkce_cookie(response)
 
         logger.info(f"[OAuth] === Callback complete for {email} ===")
         return response
 
+    except InsufficientScopesError:
+        logger.warning("[OAuth] Gmail scope not granted — auto-retrying with prompt=consent")
+        return _create_oauth_redirect(prompt="consent")
     except ValueError as e:
         logger.error(f"[OAuth] Callback error: {e}")
+        from urllib.parse import quote
         frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
-        error_url = f"{frontend_url}?auth_error={str(e)}"
+        error_url = f"{frontend_url}?auth_error={quote(str(e))}"
         return RedirectResponse(url=error_url, status_code=302)
 
 
@@ -1225,29 +1259,79 @@ async def filter_advanced(
     }
 
 
+@app.get("/api/settings/llm")
+async def get_llm_settings(
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Return current LLM provider settings. API key is not returned, only whether one is set."""
+    cfg = _load_llm_settings()
+    return {
+        "provider": cfg["provider"],
+        "model": cfg["model"],
+        "has_api_key": bool(cfg["api_key"]),
+        "supported_providers": SUPPORTED_PROVIDERS,
+    }
+
+
+class LLMSettingsRequest(BaseModel):
+    provider: str
+    model: str = ""
+    api_key: str = ""
+
+
+@app.post("/api/settings/llm")
+async def save_llm_settings(
+    request: LLMSettingsRequest,
+    user: AuthenticatedUser = Depends(require_auth)
+) -> dict:
+    """Persist LLM provider settings to the database."""
+    if request.provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider '{request.provider}'. Supported: {SUPPORTED_PROVIDERS}")
+
+    storage.set_setting("llm.provider", request.provider)
+    if request.model:
+        storage.set_setting("llm.model", request.model)
+    else:
+        storage.set_setting("llm.model", "")
+    providers_needing_key = {"openai", "anthropic"}
+    if request.api_key:
+        storage.set_setting("llm.api_key", request.api_key)
+    elif request.provider not in providers_needing_key:
+        # Switching to a provider that doesn't use an API key — clear any stored key.
+        storage.set_setting("llm.api_key", "")
+
+    logger.info(f"[LLM SETTINGS] Saved provider={request.provider} model={request.model or '(auto)'}")
+    return {"success": True, "provider": request.provider, "model": request.model}
+
+
 @app.get("/models")
 async def list_models(
     user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
-    """List available LLM models from Ollama. Requires authentication."""
+    """List available LLM models. Only queries Ollama when the active provider is ollama."""
     import json
-    import os
     import urllib.request
 
-    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    cfg = _load_llm_settings()
+    provider = cfg["provider"]
+
+    if provider != "ollama":
+        return {"models": [], "provider": provider}
+
+    ollama_host = get_ollama_host()
 
     try:
         req = urllib.request.Request(f"{ollama_host}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read())
             models = [{"name": m["name"], "size": m["size"]} for m in data.get("models", [])]
-            return {"models": models}
+            return {"models": models, "provider": provider}
     except urllib.error.URLError as e:
         logger.warning(f"Ollama not available: {e}")
         raise HTTPException(status_code=503, detail="Ollama service not available. Please start Ollama.")
     except Exception as e:
         logger.error(f"Error fetching models: {e}")
-        return {"models": [], "error": str(e)}
+        return {"models": [], "provider": provider, "error": str(e)}
 
 
 class SetModelRequest(BaseModel):
@@ -1260,36 +1344,19 @@ async def set_model(
     request: SetModelRequest,
     user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
-    """Set the active LLM model for all subsequent operations. Requires authentication."""
-    import os
-
-    try:
-        os.environ["LLM_MODEL"] = request.model
-        logger.info(f"[MODEL SELECTION] Changed model to: {request.model}")
-        return {
-            "success": True,
-            "model": request.model,
-            "message": f"Model changed to {request.model}"
-        }
-    except Exception as e:
-        logger.error(f"[MODEL SELECTION] Error setting model: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    """Set the active LLM model. Persists to DB."""
+    storage.set_setting("llm.model", request.model)
+    logger.info(f"[MODEL SELECTION] Changed model to: {request.model}")
+    return {"success": True, "model": request.model}
 
 
 @app.get("/api/current-model")
 async def get_current_model(
     user: AuthenticatedUser = Depends(require_auth)
 ) -> dict:
-    """Get the currently active LLM model. Requires authentication."""
-    import os
-
-    current_model = os.getenv("LLM_MODEL", "")
-    provider = os.getenv("LLM_PROVIDER", "ollama")
-
-    return {
-        "model": current_model,
-        "provider": provider
-    }
+    """Get the currently active LLM provider and model."""
+    cfg = _load_llm_settings()
+    return {"model": cfg["model"], "provider": cfg["provider"]}
 
 
 @app.post("/api/ollama/start")
@@ -1298,14 +1365,30 @@ async def start_ollama(
 ) -> dict:
     """Start the Ollama service. Requires authentication."""
     import subprocess
-    import os
+    import urllib.request
+    import urllib.error
+
+    cfg = _load_llm_settings()
+    if cfg["provider"] != "ollama":
+        raise HTTPException(status_code=400, detail=f"Ollama is not the active provider (current: {cfg['provider']}). Switch to Ollama in LLM settings.")
 
     logger.info("Starting Ollama service...")
+
+    if os.path.exists("/.dockerenv"):
+        # Inside Docker: can't spawn host processes — check if Ollama is reachable over the network instead
+        host = get_ollama_host()
+        try:
+            urllib.request.urlopen(f"{host}/api/tags", timeout=3)
+            logger.info("Ollama reachable at %s", host)
+            return {"status": "running", "message": f"Ollama is running at {host}"}
+        except urllib.error.URLError:
+            logger.error("Ollama not reachable at %s", host)
+            raise HTTPException(status_code=503, detail=f"Ollama is not running on the host. Start it with: ollama serve")
+
     try:
-        # Try to start Ollama in the background
         if os.name == 'nt':  # Windows
             subprocess.Popen(['ollama', 'serve'], creationflags=subprocess.CREATE_NO_WINDOW)
-        else:  # Unix/Linux/Mac
+        else:
             subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
         logger.info("Ollama service start command issued")
@@ -1343,13 +1426,13 @@ async def reclassify_message(
 
     logger.info(f"[RECLASSIFY] Found message: subject='{msg.subject[:50]}...'")
 
-    # Set model if provided
-    if request.model:
-        os.environ["LLM_MODEL"] = request.model
-        logger.info(f"[RECLASSIFY] Using model: {request.model}")
-
-    # Classify using LLM
-    processor = LLMProcessor()
+    # Classify using LLM — pick up per-request model override if provided
+    cfg = _load_llm_settings()
+    processor = LLMProcessor(
+        provider=cfg["provider"] or None,
+        model=request.model or cfg["model"] or None,
+        api_key=cfg["api_key"] or None,
+    )
     subject = msg.subject or ""
     # Try to extract body from payload, fallback to snippet
     body = ""
@@ -1446,7 +1529,7 @@ def get_rag_engine() -> RAGQueryEngine:
         from .storage.storage import get_storage_backend
         storage_backend = get_storage_backend()
         embedder = EmbeddingService()
-        llm = LLMProcessor()
+        llm = _build_llm_processor()
         _rag_engine = RAGQueryEngine(storage_backend, embedder, llm)
     return _rag_engine
 

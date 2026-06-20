@@ -39,12 +39,7 @@ def storage_factory_from_env() -> StorageBackend:
       - DB_PORT (or POSTGRES_PORT) - the port to connect to (e.g., 5433 for cloudflared proxy)
       - DB_NAME (or POSTGRES_DB) - the database name
     """
-    mode = os.environ.get("STORAGE_BACKEND")
-    if not mode:
-        raise ValueError(
-            "STORAGE_BACKEND environment variable is required. "
-            "Set to 'sqlite', 'postgres', or 'memory'"
-        )
+    mode = os.environ.get("STORAGE_BACKEND", "sqlite")
 
     mode = mode.lower()
     if mode == "memory" or mode == "inmemory":
@@ -185,6 +180,14 @@ def get_history_id() -> Optional[str]:
 
 def set_history_id(history_id: str) -> None:
     get_storage_backend().set_history_id(history_id)
+
+
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    return get_storage_backend().get_setting(key, default)
+
+
+def set_setting(key: str, value: str) -> None:
+    get_storage_backend().set_setting(key, value)
 
 
 def get_label_counts() -> dict:

@@ -169,6 +169,12 @@ class InMemoryStorage(StorageBackend):
     def set_history_id(self, history_id: str) -> None:
         self._meta["historyId"] = history_id
 
+    def get_setting(self, key: str, default=None):
+        return self._meta.get(key, default)
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._meta[key] = value
+
     def list_classification_records_for_message(self, message_id: str):
         data = self._classifications.get(message_id, [])
         from ..models.classification_record import ClassificationRecord

@@ -339,8 +339,7 @@ class TestGetModelsEndpoint:
         from src.api import app
         import json
         from io import BytesIO
-        
-        # Mock the urllib.request.urlopen response
+
         mock_response = MagicMock()
         mock_data = json.dumps({
             "models": [
@@ -352,31 +351,46 @@ class TestGetModelsEndpoint:
         mock_response.read.return_value = mock_data
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        
-        with patch('urllib.request.urlopen', return_value=mock_response):
-            client = create_authenticated_client(app)
-            response = client.get("/models")
-            
-            assert response.status_code == 200
-            data = response.json()
-            assert "models" in data
-            assert len(data["models"]) == 3
-            assert data["models"][0]["name"] == "gemma:2b"
-            assert data["models"][1]["name"] == "gemma:7b"
-            assert data["models"][2]["name"] == "llama2:13b"
-    
+
+        with patch.dict('os.environ', {'LLM_PROVIDER': 'ollama'}):
+            with patch('urllib.request.urlopen', return_value=mock_response):
+                client = create_authenticated_client(app)
+                response = client.get("/models")
+
+                assert response.status_code == 200
+                data = response.json()
+                assert "models" in data
+                assert len(data["models"]) == 3
+                assert data["models"][0]["name"] == "gemma:2b"
+                assert data["models"][1]["name"] == "gemma:7b"
+                assert data["models"][2]["name"] == "llama2:13b"
+
     def test_get_models_handles_ollama_unavailable(self):
         """Test that /models endpoint handles Ollama being unavailable."""
         from src.api import app
-        
-        # Mock connection error
-        with patch('urllib.request.urlopen', side_effect=Exception("Connection refused")):
-            client = create_authenticated_client(app)
-            response = client.get("/models")
-            
-            # The endpoint catches exceptions and returns 200 with empty models and error
-            assert response.status_code == 200
-            data = response.json()
-            assert "models" in data
-            assert len(data["models"]) == 0
-            assert "error" in data
+
+        with patch.dict('os.environ', {'LLM_PROVIDER': 'ollama'}):
+            with patch('urllib.request.urlopen', side_effect=Exception("Connection refused")):
+                client = create_authenticated_client(app)
+                response = client.get("/models")
+
+                assert response.status_code == 200
+                data = response.json()
+                assert "models" in data
+                assert len(data["models"]) == 0
+                assert "error" in data
+
+    def test_get_models_skips_ollama_for_rules_provider(self):
+        """Test that /models endpoint returns empty list without hitting Ollama when provider is not ollama."""
+        from src.api import app
+
+        with patch.dict('os.environ', {'LLM_PROVIDER': 'rules'}):
+            with patch('urllib.request.urlopen', side_effect=Exception("should not be called")) as mock_urlopen:
+                client = create_authenticated_client(app)
+                response = client.get("/models")
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["models"] == []
+                assert data["provider"] == "rules"
+                mock_urlopen.assert_not_called()

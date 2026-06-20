@@ -335,6 +335,50 @@ class PostgresStorage(StorageBackend):
             print(f"Warning: Could not add foreign key constraint: {e}", file=sys.stderr)
             conn.rollback()
 
+        # OAuth tokens table (idempotent — safe on both fresh and upgraded DBs)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_tokens (
+                email TEXT PRIMARY KEY,
+                access_token BYTEA NOT NULL,
+                refresh_token BYTEA NOT NULL,
+                token_expiry TIMESTAMP WITH TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_oauth_tokens_email ON oauth_tokens(email)
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION update_oauth_tokens_updated_at()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = NOW();
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+
+        cur.execute("DROP TRIGGER IF EXISTS oauth_tokens_updated_at ON oauth_tokens")
+        cur.execute(
+            """
+            CREATE TRIGGER oauth_tokens_updated_at
+                BEFORE UPDATE ON oauth_tokens
+                FOR EACH ROW EXECUTE FUNCTION update_oauth_tokens_updated_at()
+            """
+        )
+
+        conn.commit()
         cur.close()
         conn.close()
 
@@ -894,6 +938,26 @@ class PostgresStorage(StorageBackend):
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """,
             ("historyId", history_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    def get_setting(self, key: str, default=None):
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM metadata WHERE key = %s", (key,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO metadata (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (key, value)
         )
         conn.commit()
         cur.close()

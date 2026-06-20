@@ -1,4 +1,11 @@
 {
+  "scripts": {
+    "dev": "concurrently --names \"backend,frontend\" -c \"blue,green\" \"cd backend && make run\" \"cd frontend && npm run dev\"",
+    "setup": "cd frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  },
   "dependencies": {
     "ollama": "^0.6.3"
   }

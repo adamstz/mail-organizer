@@ -46,26 +46,66 @@ organize-mail/
 
 ## Quick Start
 
-1. **Backend Setup**
-   ```bash
-   cd backend
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   uvicorn src.api:app --reload
-   ```
+### Option A: Docker (recommended)
 
-2. **Frontend Setup**
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
+Both services run hot-reloading dev servers in containers — no Python/Node setup on the host, and a single combined log stream.
 
-3. **Configure Gmail Integration**
-   - Set up OAuth credentials in Google Cloud Console
-   - Set environment variables (see [Authentication Setup](#authentication-setup))
-   - Complete the OAuth flow in the app
+1. **Configure environment**
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` and fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `JWT_SECRET` (see [Authentication Setup](#authentication-setup) for how to get OAuth credentials). SQLite is the default storage backend and needs no further configuration.
+
+2. **Start everything**
+   ```bash
+   docker compose up --build
+   ```
+   This builds and runs the backend (http://localhost:8000) and frontend (http://localhost:5173). Both containers mount the source code from the host, so edits trigger hot reload with no rebuild needed. The database schema is created automatically on first start.
+
+3. **Tail logs**
+   ```bash
+   docker compose logs -f
+   ```
+   Both services' output streams to one place — handy for debugging, and a single, greppable target if you're using an AI assistant (e.g. Claude Code) to help diagnose an issue. Append `backend` or `frontend` to follow just one service.
+
+4. **Configure Gmail Integration** — see [Authentication Setup](#authentication-setup).
+
+Stop with `docker compose down`. The SQLite file lives on the host at `backend/mail.db` and persists across restarts.
+
+> **Note:** the backend container reads its config straight from `.env` (via Compose's `env_file:`), not from your shell's exported variables — so it's safe to use Docker even if you also export `STORAGE_BACKEND`, `JWT_SECRET`, etc. natively (e.g. for [native dev](#option-b-run-natively-without-docker)). Whatever's in `.env` is what the container gets.
+
+### Option B: Run natively (without Docker)
+
+**Backend** (one-time, requires Python 3):
+```bash
+cd backend
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cd ..
+```
+
+**Frontend & root deps** (one-time):
+```bash
+npm run setup
+```
+
+**Set environment variables** — SQLite is recommended for local development (no Postgres needed):
+```bash
+export STORAGE_BACKEND=sqlite          # use SQLite for local dev
+export STORAGE_DB_PATH=./mail.db       # optional — defaults to ~/.organize_mail.db
+export JWT_SECRET=$(openssl rand -hex 32)
+export GOOGLE_CLIENT_ID="your_client_id.apps.googleusercontent.com"
+export GOOGLE_CLIENT_SECRET="your_client_secret"
+```
+
+**Start both servers**:
+```bash
+npm run dev
+```
+
+This starts the FastAPI backend on http://localhost:8000 and the Vite frontend on http://localhost:5173 in a single terminal with labeled, color-coded output. The database schema is created automatically on first start — no migration scripts needed.
+
+Then configure Gmail Integration — see [Authentication Setup](#authentication-setup).
 
 See [Backend README](backend/README.md) and [Frontend README](frontend/README.md) for detailed setup instructions.
 
@@ -83,29 +123,41 @@ The application uses OAuth 2.0 to access your Gmail. Follow these steps:
 
 ### 2. Set Environment Variables
 
+**Docker** — set these in `.env` (created from `.env.example`, see [Quick Start](#quick-start)):
 ```bash
-# Required
+JWT_SECRET=...           # generate with: openssl rand -hex 32
+GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_client_secret
+STORAGE_BACKEND=sqlite    # or 'postgres' for production
+
+# Optional - restrict to your email only (recommended for self-hosted)
+ALLOWED_EMAIL=your.email@gmail.com
+
+# Optional - set to 'true' when running behind HTTPS (see note below)
+SECURE_COOKIES=false
+```
+
+**Native (no Docker)** — export the same values in your shell:
+```bash
 export JWT_SECRET=$(openssl rand -hex 32)
 export GOOGLE_CLIENT_ID="your_client_id.apps.googleusercontent.com"
 export GOOGLE_CLIENT_SECRET="your_client_secret"
+export STORAGE_BACKEND=sqlite   # or 'postgres' for production
 
 # Optional - restrict to your email only (recommended for self-hosted)
 export ALLOWED_EMAIL="your.email@gmail.com"
 ```
 
-### 3. Run Database Migration (PostgreSQL only)
+> **`SECURE_COOKIES`**: When set to `true`, the browser will only send authentication and CSRF-protection cookies over HTTPS connections. This prevents session hijacking over plain HTTP, and should be enabled whenever the app is exposed beyond localhost (e.g. behind a reverse proxy with TLS). Leave it `false` for local development — `localhost` doesn't use HTTPS so `Secure` cookies would break login entirely.
 
-```bash
-cd backend
-python run_migration.py src/storage/migrations/004_add_oauth_tokens.sql
-```
+### 3. Authenticate
 
-### 4. Authenticate
-
-1. Start the backend and frontend servers
+1. Start the backend and frontend servers (`docker compose up --build`, or `npm run dev` if running natively)
 2. Open http://localhost:5173
 3. Click "Sign in with Google"
 4. Grant Gmail read permissions
+
+> The database schema (including the OAuth tokens table) is created automatically on first start. No migration scripts are needed for a fresh install.
 
 For detailed documentation, see [docs/AUTH_IMPLEMENTATION_PLAN.md](docs/AUTH_IMPLEMENTATION_PLAN.md).
 

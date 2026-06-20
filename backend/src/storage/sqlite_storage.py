@@ -164,6 +164,50 @@ class SQLiteStorage(StorageBackend):
             """
         )
 
+        # OAuth tokens table (plaintext — dev only, no pgcrypto)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_tokens (
+                email TEXT PRIMARY KEY,
+                access_token TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                token_expiry TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # Migration: add embedding columns to messages (SQLite stores as BLOB;
+        # actual embedding compute requires Postgres + pgvector)
+        for col in ("embedding BLOB", "embedding_model TEXT"):
+            try:
+                cur.execute(f"ALTER TABLE messages ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # RAG chunks table — mirrors Postgres schema but without the vector column
+        # (SQLite doesn't support pgvector; this table is a no-op stub so that
+        # queries like _get_unembedded_count don't fail with "no such table")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_chunks (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_chunks_message_id
+            ON email_chunks(message_id)
+            """
+        )
+
         conn.commit()
         conn.close()
 
@@ -465,6 +509,21 @@ class SQLiteStorage(StorageBackend):
         conn = self.connect()
         cur = conn.cursor()
         cur.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ("historyId", history_id))
+        conn.commit()
+        conn.close()
+
+    def get_setting(self, key: str, default=None):
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM metadata WHERE key = ?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", (key, value))
         conn.commit()
         conn.close()
 
@@ -925,4 +984,316 @@ class SQLiteStorage(StorageBackend):
         )
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # CRUD helpers missing from original implementation
+    # ------------------------------------------------------------------
+
+    def delete_message(self, message_id: str) -> bool:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def delete_messages(self, message_ids: List[str]) -> int:
+        if not message_ids:
+            return 0
+        conn = self.connect()
+        cur = conn.cursor()
+        placeholders = ",".join("?" * len(message_ids))
+        cur.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", message_ids)
+        count = cur.rowcount
+        conn.commit()
+        conn.close()
+        return count
+
+    def update_message_latest_classification(self, message_id: str, classification_id: str) -> None:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE messages SET latest_classification_id = ? WHERE id = ?",
+            (classification_id, message_id),
+        )
+        conn.commit()
+        conn.close()
+
+    # ------------------------------------------------------------------
+    # Search / analytics (simple LIKE queries — sufficient for dev/test)
+    # ------------------------------------------------------------------
+
+    def search_by_sender(self, sender: str, limit: int = 100) -> List[MailMessage]:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet,
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.from_addr LIKE ?
+            ORDER BY m.internal_date DESC
+            LIMIT ?
+            """,
+            (f"%{sender}%", limit),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return self._rows_to_messages(rows)
+
+    def search_by_attachment(self, limit: int = 100) -> List[MailMessage]:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet,
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE m.has_attachments = 1
+            ORDER BY m.internal_date DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return self._rows_to_messages(rows)
+
+    def search_by_keywords(self, keywords: List[str], limit: int = 100) -> List[MailMessage]:
+        if not keywords:
+            return []
+        conn = self.connect()
+        cur = conn.cursor()
+        conditions = " OR ".join(
+            "(m.subject LIKE ? OR m.snippet LIKE ? OR m.from_addr LIKE ?)" for _ in keywords
+        )
+        params = [val for kw in keywords for val in (f"%{kw}%", f"%{kw}%", f"%{kw}%")]
+        params.append(limit)
+        cur.execute(
+            f"""
+            SELECT m.id, m.thread_id, m.from_addr, m.to_addr, m.subject, m.snippet,
+                   m.labels, m.internal_date, m.payload, m.raw, m.headers, m.has_attachments,
+                   c.labels as class_labels, c.priority as class_priority, c.summary as class_summary
+            FROM messages m
+            LEFT JOIN classifications c ON m.latest_classification_id = c.id
+            WHERE {conditions}
+            ORDER BY m.internal_date DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return self._rows_to_messages(rows)
+
+    def count_by_topic(self, topic: str) -> int:
+        conn = self.connect()
+        cur = conn.cursor()
+        pattern = f"%{topic}%"
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM messages
+            WHERE subject LIKE ? OR snippet LIKE ? OR from_addr LIKE ?
+            """,
+            (pattern, pattern, pattern),
+        )
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
+
+    def get_daily_email_stats(self, days: int = 30) -> List[dict]:
+        conn = self.connect()
+        cur = conn.cursor()
+        # internal_date is in milliseconds since epoch
+        cur.execute(
+            """
+            SELECT date(internal_date / 1000, 'unixepoch') as date, COUNT(*) as count
+            FROM messages
+            WHERE internal_date >= (strftime('%s', 'now') - ? * 86400) * 1000
+            GROUP BY date
+            ORDER BY date ASC
+            """,
+            (days,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [{"date": r[0], "count": r[1]} for r in rows]
+
+    def get_top_senders(self, limit: int = 10) -> List[dict]:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT from_addr, COUNT(*) as count
+            FROM messages
+            WHERE from_addr IS NOT NULL
+            GROUP BY from_addr
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [{"from_addr": r[0], "count": r[1]} for r in rows]
+
+    def get_total_message_count(self) -> int:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM messages")
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
+
+    def get_unread_count(self) -> int:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM messages WHERE labels LIKE '%\"UNREAD\"%'")
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
+
+    # ------------------------------------------------------------------
+    # OAuth token storage (plaintext — dev only)
+    # ------------------------------------------------------------------
+
+    def save_oauth_tokens(
+        self,
+        email: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry: "datetime",
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        expiry_str = token_expiry.isoformat() if hasattr(token_expiry, "isoformat") else str(token_expiry)
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO oauth_tokens
+                (email, access_token, refresh_token, token_expiry, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (email, access_token, refresh_token, expiry_str, now, now),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_oauth_tokens(self, email: str) -> Optional[dict]:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT email, access_token, refresh_token, token_expiry FROM oauth_tokens WHERE email = ?",
+            (email,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        from datetime import datetime as _dt
+        expiry = row["token_expiry"]
+        try:
+            expiry = _dt.fromisoformat(expiry)
+        except Exception:
+            pass
+        return {
+            "email": row["email"],
+            "access_token": row["access_token"],
+            "refresh_token": row["refresh_token"],
+            "token_expiry": expiry,
+        }
+
+    def update_access_token(self, email: str, access_token: str, token_expiry: "datetime") -> None:
+        expiry_str = token_expiry.isoformat() if hasattr(token_expiry, "isoformat") else str(token_expiry)
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE oauth_tokens
+            SET access_token = ?, token_expiry = ?, updated_at = ?
+            WHERE email = ?
+            """,
+            (access_token, expiry_str, datetime.now(timezone.utc).isoformat(), email),
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_oauth_tokens(self, email: str) -> None:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM oauth_tokens WHERE email = ?", (email,))
+        conn.commit()
+        conn.close()
+
+    def is_gmail_connected(self, email: str) -> dict:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT token_expiry, refresh_token FROM oauth_tokens WHERE email = ?",
+            (email,),
+        )
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            return {"connected": False, "can_refresh": False, "token_expiry": None}
+
+        from datetime import datetime as _dt
+        has_refresh = bool(row["refresh_token"])
+        try:
+            token_expiry = _dt.fromisoformat(row["token_expiry"])
+        except Exception:
+            token_expiry = None
+
+        now = datetime.now(timezone.utc)
+        if token_expiry and token_expiry.tzinfo is None:
+            from datetime import timezone as _tz
+            token_expiry = token_expiry.replace(tzinfo=_tz.utc)
+
+        if token_expiry and token_expiry > now:
+            return {"connected": True, "can_refresh": has_refresh, "token_expiry": token_expiry}
+        if has_refresh:
+            return {"connected": False, "can_refresh": True, "token_expiry": token_expiry}
+        return {"connected": False, "can_refresh": False, "token_expiry": token_expiry}
+
+    def get_authenticated_email(self) -> Optional[str]:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT email FROM oauth_tokens LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        return row["email"] if row else None
+
+    # ------------------------------------------------------------------
+    # Internal helper
+    # ------------------------------------------------------------------
+
+    def _rows_to_messages(self, rows) -> List[MailMessage]:
+        result = []
+        for r in rows:
+            result.append(
+                MailMessage(
+                    id=r["id"],
+                    thread_id=r["thread_id"],
+                    from_=r["from_addr"],
+                    to=r["to_addr"],
+                    subject=r["subject"],
+                    snippet=r["snippet"],
+                    labels=self._deserialize(r["labels"]),
+                    internal_date=r["internal_date"],
+                    payload=self._deserialize(r["payload"]),
+                    raw=r["raw"],
+                    headers=self._deserialize(r["headers"]) or {},
+                    has_attachments=bool(r["has_attachments"]) if r["has_attachments"] is not None else False,
+                    classification_labels=self._deserialize(r["class_labels"]) if r["class_labels"] else None,
+                    priority=r["class_priority"],
+                    summary=r["class_summary"],
+                )
+            )
+        return result
 
